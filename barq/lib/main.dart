@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'settings.dart';
 
 const Color kLightningYellow = Color(0xFFF4C21E);
 const Color kLightningNavy = Color(0xFF0B1220);
@@ -8,63 +9,6 @@ const Color kLightningMuted = Color(0xFF9AA3B2);
 const Color kLightningLightBackground = Color(0xFFF7F7FB);
 const Color kLightningLightBorder = Color(0xFFE5E7EB);
 const Color kLightningLightMuted = Color(0xFF6B7280);
-
-enum AppLanguage { en, ar }
-
-class AppStrings {
-  const AppStrings(this.language);
-
-  final AppLanguage language;
-
-  static const Map<AppLanguage, Map<String, String>> _values = {
-    AppLanguage.en: {
-      'appName': 'Barq',
-      'dashboard': 'Customer Dashboard',
-      'settings': 'Settings',
-      'logout': 'Logout',
-      'welcome': 'Welcome back, {name}!',
-      'help': "Need a tow? We're here to help 24/7",
-      'requestTow': 'Request Tow',
-      'requestTowSub': 'Get help now or schedule for later',
-      'trackService': 'Track Service',
-      'trackServiceSub': 'Monitor your tow truck in real-time',
-      'getEstimate': 'Get Estimate',
-      'getEstimateSub': 'Calculate pricing for your route',
-      'activeRequests': 'Active Requests',
-      'serviceHistory': 'Service History',
-      'noHistoryTitle': 'No service history yet',
-      'noHistoryBody': 'Completed requests will appear here.',
-      'eta': 'ETA',
-      'distance': 'Distance',
-      'enRoute': 'En Route',
-    },
-    AppLanguage.ar: {
-      'appName': 'برق',
-      'dashboard': 'لوحة العميل',
-      'settings': 'الإعدادات',
-      'logout': 'تسجيل الخروج',
-      'welcome': 'مرحبًا بعودتك، {name}!',
-      'help': 'تحتاج سحب؟ نحن هنا للمساعدة على مدار الساعة',
-      'requestTow': 'طلب سحب',
-      'requestTowSub': 'اطلب المساعدة الآن أو جدولة لاحقًا',
-      'trackService': 'تتبع الخدمة',
-      'trackServiceSub': 'راقب شاحنة السحب لحظة بلحظة',
-      'getEstimate': 'احصل على تقدير',
-      'getEstimateSub': 'احسب التكلفة لمسارك',
-      'activeRequests': 'الطلبات النشطة',
-      'serviceHistory': 'سجل الخدمة',
-      'noHistoryTitle': 'لا يوجد سجل خدمة بعد',
-      'noHistoryBody': 'ستظهر الطلبات المكتملة هنا.',
-      'eta': 'الوقت المتوقع',
-      'distance': 'المسافة',
-      'enRoute': 'في الطريق',
-    },
-  };
-
-  String text(String key) => _values[language]?[key] ?? key;
-
-  String welcome(String name) => text('welcome').replaceAll('{name}', name);
-}
 
 void main() {
   runApp(const MyApp());
@@ -131,12 +75,6 @@ class _MyAppState extends State<MyApp> {
   }
 }
 
-class UserProfile {
-  const UserProfile({required this.firstName});
-
-  final String firstName;
-}
-
 class ActiveRequest {
   const ActiveRequest({
     required this.driverName,
@@ -172,7 +110,15 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final UserProfile _user = const UserProfile(firstName: 'Ahmed');
+  final UserProfile _user = const UserProfile(
+    firstName: 'Ahmed',
+    lastName: 'Al-Khalifa',
+    email: 'a@gmail.com',
+    role: 'Customer',
+    totalRides: 24,
+    totalSpent: '471.250',
+    memberSince: 'Jan 2024',
+  );
 
   final List<ActiveRequest> _activeRequests = const [
     ActiveRequest(
@@ -341,29 +287,19 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         IconButton(
-          onPressed: widget.onToggleTheme,
-          icon: Icon(
-            _isDark(context) ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-            color: _isDark(context) ? Colors.white : kLightningNavy,
-          ),
-          tooltip: _isDark(context) ? 'Light mode' : 'Dark mode',
-        ),
-        TextButton(
-          onPressed: widget.onToggleLanguage,
-          style: TextButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            minimumSize: const Size(44, 36),
-          ),
-          child: Text(
-            widget.language == AppLanguage.en ? 'AR' : 'EN',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: kLightningYellow,
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => SettingsPage(
+                  user: _user,
+                  language: widget.language,
+                  isDark: _isDark(context),
+                  onToggleTheme: widget.onToggleTheme,
+                  onToggleLanguage: widget.onToggleLanguage,
                 ),
-          ),
-        ),
-        IconButton(
-          onPressed: () {},
+              ),
+            );
+          },
           icon: Icon(
             Icons.settings_outlined,
             color: _isDark(context) ? Colors.white : kLightningNavy,
