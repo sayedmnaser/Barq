@@ -1,11 +1,483 @@
 import 'package:flutter/material.dart';
 
-class TrackServicePage extends StatelessWidget {
-  const TrackServicePage({super.key});
+import 'models/place_result.dart';
+import 'models/tow_request_model.dart';
+import 'services/bahrain_map_service.dart';
+import 'services/pocketbase_service.dart';
+import 'settings.dart';
+import 'widgets/barq_live_map.dart';
+
+class TrackServicePage extends StatefulWidget {
+  const TrackServicePage({
+    super.key,
+    this.requestId,
+    this.pickupLocation = 'Seef District, Manama',
+    this.destinationLocation = 'Auto Repair - Sitra Industrial Area',
+    this.driverName = 'Ahmed Al-Khalifa',
+    this.driverRating = 4.8,
+    this.driverTotalRides = 1247,
+    this.vehicleDescription = 'Flatbed Tow Truck #12',
+    this.licensePlate = 'TOW-2481',
+    this.distanceKm = 10.0,
+    this.remainingDistanceKm = 0.3,
+    this.etaMinutes = 8,
+    this.baseFare = 50.0,
+    this.distanceFare = 25.0,
+    this.pickupLat,
+    this.pickupLng,
+    this.destinationLat,
+    this.destinationLng,
+    this.driverLat,
+    this.driverLng,
+    this.language,
+  });
+
+  final String? requestId;
+  final String pickupLocation;
+  final String destinationLocation;
+  final String driverName;
+  final double driverRating;
+  final int driverTotalRides;
+  final String vehicleDescription;
+  final String licensePlate;
+  final double distanceKm;
+  final double remainingDistanceKm;
+  final int etaMinutes;
+  final double baseFare;
+  final double distanceFare;
+  final double? pickupLat;
+  final double? pickupLng;
+  final double? destinationLat;
+  final double? destinationLng;
+  final double? driverLat;
+  final double? driverLng;
+  final AppLanguage? language;
+
+  @override
+  State<TrackServicePage> createState() => _TrackServicePageState();
+}
+
+class _TrackServicePageState extends State<TrackServicePage> {
+  final PocketBaseService _pocketBaseService = PocketBaseService.instance;
+
+  late String _driverName;
+  late double _driverRating;
+  late int _driverTotalRides;
+  late String _vehicleDescription;
+  late String _licensePlate;
+  late double _distanceKm;
+  late double _remainingDistanceKm;
+  late int _etaMinutes;
+  late double _baseFare;
+  late double _distanceFare;
+  late String _pickupLocation;
+  late String _destinationLocation;
+  late double? _pickupLat;
+  late double? _pickupLng;
+  late double? _destinationLat;
+  late double? _destinationLng;
+  late double? _driverLat;
+  late double? _driverLng;
+
+  String _status = 'pending';
+  bool _loadingMap = true;
+  bool _realtimeReady = false;
+  String? _mapNotice;
+
+  PlaceResult? _pickupPlace;
+  PlaceResult? _destinationPlace;
+  PlaceResult? _driverPlace;
+  RouteInfo? _routeInfo;
+
+  AppLanguage get _language =>
+      widget.language ??
+      (Directionality.of(context) == TextDirection.rtl
+          ? AppLanguage.ar
+          : AppLanguage.en);
+
+  bool get _isArabic => _language == AppLanguage.ar;
+
+  double get _totalFare => _baseFare + _distanceFare;
+
+  double get _displayDistanceKm {
+    final routeDistance = _routeInfo?.distanceKm;
+    if (routeDistance != null && routeDistance > 0) {
+      return routeDistance;
+    }
+    return _distanceKm;
+  }
+
+  int get _displayEtaMinutes {
+    final routeEta = _routeInfo?.durationMinutes;
+    if (_etaMinutes > 0) {
+      return _etaMinutes;
+    }
+    return routeEta ?? 0;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _driverName = widget.driverName;
+    _driverRating = widget.driverRating;
+    _driverTotalRides = widget.driverTotalRides;
+    _vehicleDescription = widget.vehicleDescription;
+    _licensePlate = widget.licensePlate;
+    _distanceKm = widget.distanceKm;
+    _remainingDistanceKm = widget.remainingDistanceKm;
+    _etaMinutes = widget.etaMinutes;
+    _baseFare = widget.baseFare;
+    _distanceFare = widget.distanceFare;
+    _pickupLocation = widget.pickupLocation;
+    _destinationLocation = widget.destinationLocation;
+    _pickupLat = widget.pickupLat;
+    _pickupLng = widget.pickupLng;
+    _destinationLat = widget.destinationLat;
+    _destinationLng = widget.destinationLng;
+    _driverLat = widget.driverLat;
+    _driverLng = widget.driverLng;
+
+    _hydrateMap();
+    if (widget.requestId != null) {
+      _loadLatestRequest();
+      _subscribeToUpdates();
+    }
+  }
+
+  @override
+  void dispose() {
+    if (widget.requestId != null) {
+      _pocketBaseService.unsubscribeTowRequest(widget.requestId!);
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadLatestRequest() async {
+    try {
+      final latest = await _pocketBaseService.getTowRequest(widget.requestId!);
+      if (!mounted) {
+        return;
+      }
+      _applyTowRequestUpdate(latest, refreshMap: true);
+    } catch (_) {
+      // Keep the optimistic state from the request page.
+    }
+  }
+
+  Future<void> _subscribeToUpdates() async {
+    try {
+      await _pocketBaseService.subscribeTowRequest(
+        widget.requestId!,
+        (updated) {
+          if (!mounted) {
+            return;
+          }
+          _applyTowRequestUpdate(updated, refreshMap: true);
+        },
+      );
+      if (mounted) {
+        setState(() {
+          _realtimeReady = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _realtimeReady = false;
+        });
+      }
+    }
+  }
+
+  void _applyTowRequestUpdate(
+    TowRequest request, {
+    required bool refreshMap,
+  }) {
+    setState(() {
+      _driverName = _normalizedText(request.driverName) ?? _driverName;
+      _driverRating = request.driverRating ?? _driverRating;
+      _driverTotalRides = request.driverTotalRides ?? _driverTotalRides;
+      _vehicleDescription = request.vehicleType;
+      _licensePlate = _normalizedText(request.licensePlate) ?? _licensePlate;
+      _distanceKm = request.distanceKm ?? _distanceKm;
+      _remainingDistanceKm = request.distanceKm ?? _remainingDistanceKm;
+      _etaMinutes = request.etaMinutes ?? _etaMinutes;
+      _baseFare = request.baseFare ?? _baseFare;
+      _distanceFare = request.distanceFare ?? _distanceFare;
+      _pickupLocation = request.pickupLocation;
+      _destinationLocation = request.destination;
+      _status = request.status;
+      _pickupLat = request.pickupLat ?? _pickupLat;
+      _pickupLng = request.pickupLng ?? _pickupLng;
+      _destinationLat = request.destinationLat ?? _destinationLat;
+      _destinationLng = request.destinationLng ?? _destinationLng;
+      _driverLat = request.driverLat ?? _driverLat;
+      _driverLng = request.driverLng ?? _driverLng;
+      if (_status == 'completed' || _status == 'cancelled') {
+        _remainingDistanceKm = 0;
+      }
+    });
+
+    if (refreshMap) {
+      _hydrateMap();
+    }
+  }
+
+  String? _normalizedText(String? value) {
+    final normalized = value?.trim() ?? '';
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  Future<void> _hydrateMap() async {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _loadingMap = true;
+      _mapNotice = null;
+    });
+
+    final pickup = await _resolvePlace(
+      label: _pickupLocation,
+      latitude: _pickupLat,
+      longitude: _pickupLng,
+    );
+    final destination = await _resolvePlace(
+      label: _destinationLocation,
+      latitude: _destinationLat,
+      longitude: _destinationLng,
+    );
+
+    RouteInfo? route;
+    if (pickup != null && destination != null) {
+      try {
+        route = await BahrainMapService.buildRoute(
+          start: pickup.latLng,
+          end: destination.latLng,
+        );
+      } catch (_) {
+        route = null;
+      }
+    }
+
+    PlaceResult? driver;
+    if (_driverLat != null && _driverLng != null) {
+      driver = PlaceResult(
+        title: _driverName.isEmpty ? _driverLabel : _driverName,
+        subtitle: _driverMarkerSubtitle,
+        latitude: _driverLat!,
+        longitude: _driverLng!,
+      );
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _pickupPlace = pickup;
+      _destinationPlace = destination;
+      _driverPlace = driver;
+      _routeInfo = route;
+      _loadingMap = false;
+      _mapNotice = _buildMapNotice(route: route, driver: driver);
+    });
+  }
+
+  Future<PlaceResult?> _resolvePlace({
+    required String label,
+    required double? latitude,
+    required double? longitude,
+  }) async {
+    final cleanLabel = label.trim();
+    if (latitude != null && longitude != null) {
+      final title = _titleFromLabel(cleanLabel);
+      final subtitle = _subtitleFromLabel(cleanLabel);
+      return PlaceResult(
+        title: title,
+        subtitle: subtitle,
+        latitude: latitude,
+        longitude: longitude,
+      );
+    }
+
+    if (cleanLabel.isEmpty) {
+      return null;
+    }
+
+    final geocoded = await BahrainMapService.geocode(cleanLabel);
+    if (geocoded == null) {
+      return null;
+    }
+
+    return geocoded.copyWith(
+      title: _titleFromLabel(cleanLabel),
+      subtitle: cleanLabel,
+    );
+  }
+
+  String _titleFromLabel(String label) {
+    final clean = label.trim();
+    if (clean.isEmpty) {
+      return _isArabic ? 'موقع' : 'Location';
+    }
+    return clean.split(',').first.trim();
+  }
+
+  String _subtitleFromLabel(String label) {
+    final clean = label.trim();
+    if (clean.isEmpty || !clean.contains(',')) {
+      return '';
+    }
+    final parts = clean.split(',').map((item) => item.trim()).toList();
+    if (parts.length <= 1) {
+      return '';
+    }
+    return parts.sublist(1).join(' • ');
+  }
+
+  String? _buildMapNotice({
+    required RouteInfo? route,
+    required PlaceResult? driver,
+  }) {
+    if ((_pickupPlace == null || _destinationPlace == null) && route == null) {
+      return _isArabic
+          ? 'تعذر تحديد مواقع الطلب بدقة على خريطة البحرين.'
+          : 'The pickup or destination could not be resolved on the Bahrain map.';
+    }
+
+    if (route == null) {
+      return _isArabic
+          ? 'تم عرض المواقع، لكن تعذر تحميل المسار الآن.'
+          : 'The locations are shown, but the driving route could not be loaded right now.';
+    }
+
+    if (driver == null && _status != 'pending' && _status != 'cancelled') {
+      return _isArabic
+          ? 'سيظهر موقع السائق مباشرة عند تحديث حقلي driver_lat و driver_lng في PocketBase.'
+          : 'The driver marker appears automatically when driver_lat and driver_lng are updated in PocketBase.';
+    }
+
+    return null;
+  }
+
+  String get _driverLabel => _isArabic ? 'السائق' : 'Driver';
+
+  String get _driverMarkerSubtitle =>
+      _isArabic ? 'موقع السائق الحالي' : 'Current driver location';
+
+  String get _refreshLabel => _isArabic ? 'تحديث' : 'Refresh';
+
+  String get _realtimeReadyLabel => _isArabic
+      ? 'التحديث المباشر متصل بقاعدة البيانات.'
+      : 'Realtime updates are connected to the database.';
+
+  String get _realtimeFallbackLabel => _isArabic
+      ? 'يعرض التطبيق آخر بيانات متاحة من PocketBase.'
+      : 'Showing the latest available PocketBase data.';
+
+  String get _callUnavailableLabel => _isArabic
+      ? 'أضف رقم هاتف السائق في قاعدة البيانات لتفعيل الاتصال المباشر.'
+      : 'Store the driver phone number in the database to enable direct calling.';
+
+  String get _mapHeadline {
+    if (_status == 'completed') {
+      return _isArabic ? 'تمت الخدمة' : 'Service completed';
+    }
+    if (_status == 'cancelled') {
+      return _isArabic ? 'تم إلغاء الطلب' : 'Request cancelled';
+    }
+    if (_driverPlace != null) {
+      return _isArabic ? 'تتبع مباشر داخل البحرين' : 'Live Bahrain tracking';
+    }
+    return _isArabic ? 'خريطة الخدمة في البحرين' : 'Bahrain service map';
+  }
+
+  String get _mapSubline {
+    final distance = _displayDistanceKm;
+    final eta = _displayEtaMinutes;
+    final pieces = <String>[];
+    if (distance > 0) {
+      pieces.add(
+        _isArabic
+            ? '${distance.toStringAsFixed(1)} كم'
+            : '${distance.toStringAsFixed(1)} km',
+      );
+    }
+    if (eta > 0 && _status != 'completed' && _status != 'cancelled') {
+      pieces.add(
+        _isArabic ? 'حوالي $eta دقيقة' : 'about $eta min',
+      );
+    }
+    if (pieces.isNotEmpty) {
+      return pieces.join(' • ');
+    }
+    return AppStrings(_language).text('realtimeTrackingSub');
+  }
+
+  int get _statusStep {
+    switch (_status) {
+      case 'assigned':
+        return 1;
+      case 'en_route':
+        return 2;
+      case 'completed':
+        return 3;
+      default:
+        return 0;
+    }
+  }
+
+  String _statusLabel(AppStrings strings) {
+    switch (_status) {
+      case 'pending':
+        return strings.text('pending');
+      case 'assigned':
+        return strings.text('assigned');
+      case 'en_route':
+        return strings.text('enRoute');
+      case 'completed':
+        return strings.text('completed');
+      case 'cancelled':
+        return strings.text('cancelled');
+      default:
+        return _status;
+    }
+  }
+
+  String _statusDescription(AppStrings strings) {
+    switch (_status) {
+      case 'pending':
+        return strings.text('serviceProgressRequested');
+      case 'assigned':
+        return strings.text('serviceProgressAssigned');
+      case 'en_route':
+        return strings.text('trackDriverOnTheWay');
+      case 'completed':
+        return _isArabic
+            ? 'تم الوصول وإنهاء الخدمة بنجاح.'
+            : 'The truck arrived and the service was completed successfully.';
+      case 'cancelled':
+        return _isArabic
+            ? 'تم إلغاء الطلب في قاعدة البيانات.'
+            : 'This request was cancelled in the database.';
+      default:
+        return strings.text('realtimeTrackingSub');
+    }
+  }
+
+  Future<void> _refreshPage() async {
+    if (widget.requestId != null) {
+      await _loadLatestRequest();
+    } else {
+      await _hydrateMap();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
+    final strings = AppStrings(_language);
 
     return Scaffold(
       appBar: AppBar(
@@ -14,122 +486,532 @@ class TrackServicePage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Track Your Service',
-              style: textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+              strings.text('trackService'),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
             ),
             Text(
-              'Real-time service tracking',
-              style: textTheme.bodyMedium?.copyWith(color: const Color(0xFF6B7280)),
+              strings.text('realtimeTrackingSub'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
+                  ),
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: _refreshLabel,
+            onPressed: _refreshPage,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: RefreshIndicator(
+        onRefresh: _refreshPage,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
           children: [
-            _MapCard(textTheme: textTheme),
+            BarqLiveMap(
+              height: 300,
+              pickup: _pickupPlace,
+              destination: _destinationPlace,
+              driver: _driverPlace,
+              routePoints: _routeInfo?.points ?? const [],
+              headline: _mapHeadline,
+              subline: _loadingMap
+                  ? (_isArabic ? 'جاري تحميل الخريطة...' : 'Loading map...')
+                  : _mapSubline,
+            ),
+            if (_loadingMap)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: LinearProgressIndicator(minHeight: 3),
+              ),
+            if (_mapNotice != null) ...[
+              const SizedBox(height: 12),
+              _noticeCard(context, _mapNotice!),
+            ],
             const SizedBox(height: 16),
-            _ServiceProgressCard(textTheme: textTheme),
+            _sectionCard(
+              context,
+              title: strings.text('serviceProgress'),
+              subtitle: _statusDescription(strings),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _progressStepChip(
+                          context,
+                          label: strings.text('serviceProgressRequested'),
+                          active: _statusStep >= 0,
+                          done: _statusStep > 0,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _progressStepChip(
+                          context,
+                          label: strings.text('serviceProgressAssigned'),
+                          active: _statusStep >= 1,
+                          done: _statusStep > 1,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _progressStepChip(
+                          context,
+                          label: strings.text('serviceProgressEnRoute'),
+                          active: _statusStep >= 2,
+                          done: _statusStep > 2,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _infoTile(
+                          context,
+                          icon: Icons.local_shipping_outlined,
+                          label: _isArabic ? 'الحالة' : 'Status',
+                          value: _statusLabel(strings),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _infoTile(
+                          context,
+                          icon: Icons.cloud_done_outlined,
+                          label: _isArabic ? 'الوقت الحقيقي' : 'Realtime',
+                          value: _realtimeReady
+                              ? _realtimeReadyLabel
+                              : _realtimeFallbackLabel,
+                          compact: true,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
-            _LocationDetailsCard(textTheme: textTheme),
+            _sectionCard(
+              context,
+              title: strings.text('serviceDetails'),
+              subtitle: _isArabic
+                  ? 'المواقع والمسافة الحالية داخل البحرين.'
+                  : 'Current locations and distance inside Bahrain.',
+              child: Column(
+                children: [
+                  _detailRow(
+                    context,
+                    icon: Icons.my_location_outlined,
+                    title: strings.text('trackPickup'),
+                    value: _pickupLocation,
+                  ),
+                  const SizedBox(height: 12),
+                  _detailRow(
+                    context,
+                    icon: Icons.flag_outlined,
+                    title: strings.text('trackDestination'),
+                    value: _destinationLocation,
+                  ),
+                  const Divider(height: 28),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _infoTile(
+                          context,
+                          icon: Icons.route_outlined,
+                          label: strings.text('distance'),
+                          value: _isArabic
+                              ? '${_displayDistanceKm.toStringAsFixed(1)} كم'
+                              : '${_displayDistanceKm.toStringAsFixed(1)} km',
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _infoTile(
+                          context,
+                          icon: Icons.schedule_outlined,
+                          label: strings.text('eta'),
+                          value: _displayEtaMinutes > 0
+                              ? (_isArabic
+                                  ? '$_displayEtaMinutes دقيقة'
+                                  : '$_displayEtaMinutes min')
+                              : '--',
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
-            _DriverCard(textTheme: textTheme),
+            _sectionCard(
+              context,
+              title: strings.text('trackYourDriver'),
+              subtitle: _isArabic
+                  ? 'بيانات السائق والمركبة من PocketBase.'
+                  : 'Driver and vehicle details from PocketBase.',
+              child: Column(
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      CircleAvatar(
+                        radius: 26,
+                        backgroundColor: const Color(0xFFF4C21E),
+                        child: Text(
+                          _driverName.isEmpty ? '?' : _driverName[0],
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: const Color(0xFF0B1220),
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _driverName,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _status == 'assigned' || _status == 'en_route'
+                                  ? strings.text('trackDriverOnTheWay')
+                                  : _statusDescription(strings),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(context).hintColor,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _infoTile(
+                          context,
+                          icon: Icons.star_outline,
+                          label: _isArabic ? 'التقييم' : 'Rating',
+                          value: _driverRating > 0
+                              ? _driverRating.toStringAsFixed(1)
+                              : '--',
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _infoTile(
+                          context,
+                          icon: Icons.history_toggle_off,
+                          label: _isArabic ? 'الرحلات' : 'Rides',
+                          value: _driverTotalRides > 0
+                              ? '$_driverTotalRides'
+                              : '--',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _detailRow(
+                    context,
+                    icon: Icons.local_shipping_outlined,
+                    title: strings.text('trackVehicle'),
+                    value: _vehicleDescription,
+                  ),
+                  const SizedBox(height: 12),
+                  _detailRow(
+                    context,
+                    icon: Icons.badge_outlined,
+                    title: strings.text('trackLicensePlate'),
+                    value: _licensePlate.trim().isEmpty ? 'Pending' : _licensePlate,
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
-            _EtaCard(textTheme: textTheme),
+            _sectionCard(
+              context,
+              title: strings.text('trackServiceCost'),
+              subtitle: _isArabic
+                  ? 'تفصيل التكلفة المحفوظة في قاعدة البيانات.'
+                  : 'Cost breakdown saved in the database.',
+              child: Column(
+                children: [
+                  _priceRow(
+                    context,
+                    label: strings.text('estimateBaseFare'),
+                    value: _baseFare,
+                  ),
+                  const SizedBox(height: 10),
+                  _priceRow(
+                    context,
+                    label:
+                        '${strings.text('estimateDistanceFare')} (${_displayDistanceKm.toStringAsFixed(1)} km)',
+                    value: _distanceFare,
+                  ),
+                  const SizedBox(height: 10),
+                  _priceRow(
+                    context,
+                    label: _isArabic ? 'المسافة المتبقية' : 'Remaining distance',
+                    valueText: _isArabic
+                        ? '${_remainingDistanceKm.toStringAsFixed(1)} كم'
+                        : '${_remainingDistanceKm.toStringAsFixed(1)} km',
+                  ),
+                  const Divider(height: 24),
+                  _priceRow(
+                    context,
+                    label: strings.text('estimateTotal'),
+                    value: _totalFare,
+                    emphasize: true,
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
-            _CostCard(textTheme: textTheme),
-            const SizedBox(height: 16),
-            _HelpCard(textTheme: textTheme),
+            _sectionCard(
+              context,
+              title: strings.text('trackNeedHelp'),
+              subtitle: _isArabic
+                  ? 'يمكنك تحديث الحالة أو مراجعة بيانات السائق من PocketBase.'
+                  : 'Refresh the request or review the live driver data from PocketBase.',
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _refreshPage,
+                          icon: const Icon(Icons.refresh),
+                          label: Text(_refreshLabel),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(_callUnavailableLabel)),
+                            );
+                          },
+                          icon: const Icon(Icons.call_outlined),
+                          label: Text(strings.text('trackCallDriver')),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
-}
 
-class _MapCard extends StatelessWidget {
-  const _MapCard({required this.textTheme});
-
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _noticeCard(BuildContext context, String text) {
     return Container(
-      height: 320,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF1F2937)
+            : const Color(0xFFFFFBEB),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFF59E0B)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Icon(Icons.info_outline, color: Color(0xFFF59E0B)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionCard(
+    BuildContext context, {
+    required String title,
+    String? subtitle,
+    required Widget child,
+  }) {
+    return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFFD9E8F7), Color(0xFFDDF5E7)],
-        ),
-        border: Border.all(color: const Color(0xFFD1D5DB)),
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Theme.of(context).dividerColor),
       ),
-      child: Stack(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Positioned(
-            top: 32,
-            left: 64,
-            child: CircleAvatar(
-              radius: 24,
-              backgroundColor: Color(0xFF2563EB),
-              child: Icon(Icons.navigation, color: Colors.white),
-            ),
-          ),
-          const Positioned(
-            top: 48,
-            right: 100,
-            child: Icon(Icons.location_on_outlined, size: 64, color: Color(0xFF2563EB)),
-          ),
-          Positioned(
-            right: 12,
-            bottom: 58,
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: const BoxDecoration(
-                color: Colors.red,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.location_on, color: Colors.white),
-            ),
-          ),
-          Align(
-            alignment: Alignment.center,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Live Map View',
-                  style: textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: const Color(0xFF334155),
-                  ),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Driver is 0.2 miles away',
-                  style: textTheme.bodyLarge?.copyWith(color: const Color(0xFF475569)),
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF16A34A),
-                    borderRadius: BorderRadius.circular(10),
+          ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
                   ),
-                  child: Text(
-                    'ETA: 0 minutes',
-                    style: textTheme.labelLarge?.copyWith(
-                      color: Colors.white,
+            ),
+          ],
+          const SizedBox(height: 16),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _progressStepChip(
+    BuildContext context, {
+    required String label,
+    required bool active,
+    required bool done,
+  }) {
+    final background = done
+        ? const Color(0xFFDCFCE7)
+        : (active
+            ? const Color(0xFFFEF3C7)
+            : (Theme.of(context).brightness == Brightness.dark
+                ? const Color(0xFF111827)
+                : const Color(0xFFF3F4F6)));
+    final foreground = done
+        ? const Color(0xFF166534)
+        : (active ? const Color(0xFF92400E) : Theme.of(context).hintColor);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: done || active
+              ? foreground.withValues(alpha: 0.25)
+              : Theme.of(context).dividerColor,
+        ),
+      ),
+      child: Text(
+        label,
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: foreground,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+
+  Widget _detailRow(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String value,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4C21E).withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: const Color(0xFFF4C21E)),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
-                  ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _infoTile(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+    bool compact = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF101827)
+            : const Color(0xFFF9FAFB),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: Theme.of(context).hintColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).hintColor,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  value,
+                  maxLines: compact ? 3 : 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
               ],
             ),
@@ -138,398 +1020,30 @@ class _MapCard extends StatelessWidget {
       ),
     );
   }
-}
 
-class _ServiceProgressCard extends StatelessWidget {
-  const _ServiceProgressCard({required this.textTheme});
+  Widget _priceRow(
+    BuildContext context, {
+    required String label,
+    double? value,
+    String? valueText,
+    bool emphasize = false,
+  }) {
+    final style = emphasize
+        ? Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            )
+        : Theme.of(context).textTheme.bodyMedium;
 
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Service Progress', style: textTheme.titleLarge),
-          const SizedBox(height: 14),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: LinearProgressIndicator(
-              value: 0.52,
-              minHeight: 8,
-              backgroundColor: const Color(0xFFE5E7EB),
-              valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF111827)),
-            ),
-          ),
-          const SizedBox(height: 16),
-          _ProgressRow(label: 'Request Received', time: '2:30 PM', done: true),
-          const SizedBox(height: 12),
-          _ProgressRow(label: 'Driver Assigned', time: '2:32 PM', done: true),
-          const SizedBox(height: 12),
-          _ProgressRow(label: 'Driver En Route', time: 'In progress', done: false),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProgressRow extends StatelessWidget {
-  const _ProgressRow({
-    required this.label,
-    required this.time,
-    required this.done,
-  });
-
-  final String label;
-  final String time;
-  final bool done;
-
-  @override
-  Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(
-          done ? Icons.check_circle : Icons.radio_button_unchecked,
-          color: done ? const Color(0xFF16A34A) : const Color(0xFF9CA3AF),
-        ),
-        const SizedBox(width: 10),
-        Expanded(child: Text(label, style: Theme.of(context).textTheme.titleMedium)),
+        Expanded(child: Text(label, style: style)),
         Text(
-          time,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: done ? const Color(0xFF16A34A) : const Color(0xFF6B7280),
+          valueText ?? '${(value ?? 0).toStringAsFixed(3)} BHD',
+          style: style?.copyWith(
+            color: emphasize ? const Color(0xFF16A34A) : null,
           ),
         ),
       ],
-    );
-  }
-}
-
-class _LocationDetailsCard extends StatelessWidget {
-  const _LocationDetailsCard({required this.textTheme});
-
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Location Details', style: textTheme.titleLarge),
-          const SizedBox(height: 16),
-          _LocationRow(
-            icon: Icons.location_on_outlined,
-            iconBg: const Color(0xFFD1FAE5),
-            iconColor: const Color(0xFF16A34A),
-            title: 'Pickup Location',
-            subtitle: 'Seef District, Manama',
-          ),
-          const Divider(height: 26),
-          _LocationRow(
-            icon: Icons.location_on_outlined,
-            iconBg: const Color(0xFFFEE2E2),
-            iconColor: Colors.red,
-            title: 'Destination',
-            subtitle: 'Auto Repair - Sitra Industrial Area',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _LocationRow extends StatelessWidget {
-  const _LocationRow({
-    required this.icon,
-    required this.iconBg,
-    required this.iconColor,
-    required this.title,
-    required this.subtitle,
-  });
-
-  final IconData icon;
-  final Color iconBg;
-  final Color iconColor;
-  final String title;
-  final String subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(color: iconBg, shape: BoxShape.circle),
-          child: Icon(icon, color: iconColor, size: 20),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: const Color(0xFF475569),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _DriverCard extends StatelessWidget {
-  const _DriverCard({required this.textTheme});
-
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Your Driver', style: textTheme.titleLarge),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: const BoxDecoration(
-                  color: Color(0xFFE5E7EB),
-                  shape: BoxShape.circle,
-                ),
-                child: const Center(
-                  child: Text('A', style: TextStyle(fontSize: 28)),
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Ahmed Al-Khalifa',
-                      style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        const Icon(Icons.star, color: Color(0xFFFACC15), size: 18),
-                        const SizedBox(width: 4),
-                        Text('4.8', style: textTheme.titleMedium),
-                        const SizedBox(width: 4),
-                        Text(
-                          '(1247 rides)',
-                          style: textTheme.bodyMedium?.copyWith(color: const Color(0xFF64748B)),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          const Divider(height: 1),
-          const SizedBox(height: 14),
-          _KeyValueRow(label: 'Vehicle', value: 'Flatbed Tow Truck #12'),
-          const SizedBox(height: 8),
-          _KeyValueRow(label: 'License Plate', value: 'TOW-2481'),
-          const SizedBox(height: 14),
-          const Divider(height: 1),
-          const SizedBox(height: 14),
-          OutlinedButton.icon(
-            onPressed: () {},
-            icon: const Icon(Icons.call_outlined),
-            label: const Text('Call Driver'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: () {},
-            icon: const Icon(Icons.chat_bubble_outline),
-            label: const Text('Send Message'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _KeyValueRow extends StatelessWidget {
-  const _KeyValueRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-              color: const Color(0xFF475569),
-            ),
-          ),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            textAlign: TextAlign.end,
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _EtaCard extends StatelessWidget {
-  const _EtaCard({required this.textTheme});
-
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFFEAF3FF),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF93C5FD)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.access_time, color: Color(0xFF2563EB)),
-              const SizedBox(width: 10),
-              Text('Estimated Arrival', style: textTheme.titleLarge),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Center(
-            child: Text(
-              '0 min',
-              style: textTheme.displaySmall?.copyWith(
-                color: const Color(0xFF2563EB),
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
-          const SizedBox(height: 6),
-          Center(
-            child: Text(
-              'Driver is on the way',
-              style: textTheme.bodyLarge?.copyWith(color: const Color(0xFF334155)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _CostCard extends StatelessWidget {
-  const _CostCard({required this.textTheme});
-
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Service Cost', style: textTheme.titleLarge),
-          const SizedBox(height: 16),
-          const _KeyValueRow(label: 'Base fare', value: '50.000 BHD'),
-          const SizedBox(height: 10),
-          const _KeyValueRow(label: 'Distance (6.2 mi)', value: '25.000 BHD'),
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Total',
-                  style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                ),
-              ),
-              Text(
-                '75.000 BHD',
-                style: textTheme.titleLarge?.copyWith(
-                  color: const Color(0xFF16A34A),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Payment will be processed after service completion',
-            style: textTheme.bodyMedium?.copyWith(color: const Color(0xFF64748B)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HelpCard extends StatelessWidget {
-  const _HelpCard({required this.textTheme});
-
-  final TextTheme textTheme;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFEF2F2),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFFECACA)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.help_outline, color: Color(0xFFDC2626)),
-          const SizedBox(width: 10),
-          Text('Need Help?', style: textTheme.titleLarge),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFD1D5DB)),
-      ),
-      child: child,
     );
   }
 }

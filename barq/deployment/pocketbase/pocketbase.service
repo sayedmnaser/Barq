@@ -1,0 +1,19 @@
+[Unit]
+Description=Barq PocketBase
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+LimitNOFILE=4096
+Restart=always
+RestartSec=5s
+StandardOutput=append:/opt/barq/pocketbase/std.log
+StandardError=append:/opt/barq/pocketbase/std.log
+WorkingDirectory=/opt/barq/pocketbase
+ExecStart=/opt/barq/pocketbase/pocketbase serve api.barqapp.com
+
+[Install]
+WantedBy=multi-user.target

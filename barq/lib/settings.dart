@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'services/pocketbase_service.dart';
 
 const Color kLightningCard = Color(0xFF141B2D);
 const Color kLightningBorder = Color(0xFF27314A);
@@ -92,8 +93,11 @@ class AppStrings {
       'createAccount': 'Create Account',
       'requiredField': 'This field is required',
       'validEmail': 'Enter a valid email address',
-      'passwordTooShort': 'Password must be at least 6 characters',
+      'passwordTooShort': 'Password must be at least 8 characters',
       'signInFailed': 'Failed to sign in',
+      'signUpFailed': 'Failed to create account',
+      'signingIn': 'Signing in...',
+      'creatingAccount': 'Creating account...',
       'passwordMismatch': 'Passwords do not match',
       'haveAccountSignIn': 'Already have an account? Sign In',
       'noAccountSignUp': "Don't have an account? Sign Up",
@@ -114,7 +118,7 @@ class AppStrings {
       'otpSendFailed': 'Failed to send OTP',
       'otpProviderMisconfigured': 'SMS provider is not configured correctly. Please contact support.',
       'otpVerificationFailed': 'Failed to verify OTP',
-      'supabaseSetupMissing': 'Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY.',
+      'pocketbaseSetupMissing': 'PocketBase is not configured. Set the PocketBase URL.',
         'requestTowService': 'Request Tow Service',
         'matchSubtitle': "We'll match you with the best driver",
         'quickRequestAvailable': 'Quick Request Available!',
@@ -126,6 +130,7 @@ class AppStrings {
         'availableTrucks': 'Available Trucks',
         'closestAvailable': 'Closest Available',
         'requestThisTruckNow': 'Request This Truck Now',
+        'confirmRequest': 'Confirm Tow Request',
         'serviceDetails': 'Service Details',
         'serviceDetailsSub': 'Tell us about your towing needs',
         'whenNeedService': 'When do you need service?',
@@ -148,6 +153,27 @@ class AppStrings {
         'realtimeTrackingSub': 'Track your driver live on map',
         'professionalService': 'Professional Service',
         'professionalServiceSub': 'Verified & rated drivers',
+        'serviceProgress': 'Service Progress',
+        'serviceProgressRequested': 'Request Received',
+        'serviceProgressAssigned': 'Driver Assigned',
+        'serviceProgressEnRoute': 'Driver En Route',
+        'inProgress': 'In progress',
+        'trackPickup': 'Pickup Location',
+        'trackDestination': 'Destination',
+        'trackYourDriver': 'Your Driver',
+        'trackVehicle': 'Vehicle',
+        'trackLicensePlate': 'License Plate',
+        'trackEstimatedArrival': 'Estimated Arrival',
+        'trackDriverOnTheWay': 'Driver is on the way',
+        'trackServiceCost': 'Service Cost',
+        'trackPaymentNote': 'Payment will be processed after service completion',
+        'trackNeedHelp': 'Need Help?',
+        'trackCallDriver': 'Call Driver',
+        'trackSendMessage': 'Send Message',
+        'pending': 'Pending',
+        'assigned': 'Assigned',
+        'completed': 'Completed',
+        'cancelled': 'Cancelled',
     },
     AppLanguage.ar: {
       'appName': 'برق',
@@ -227,8 +253,11 @@ class AppStrings {
       'createAccount': 'إنشاء الحساب',
       'requiredField': 'هذا الحقل مطلوب',
       'validEmail': 'أدخل بريدًا إلكترونيًا صالحًا',
-      'passwordTooShort': 'يجب أن تكون كلمة المرور 6 أحرف على الأقل',
+      'passwordTooShort': 'يجب أن تكون كلمة المرور 8 أحرف على الأقل',
       'signInFailed': 'فشل تسجيل الدخول',
+      'signUpFailed': 'فشل إنشاء الحساب',
+      'signingIn': 'جاري تسجيل الدخول...',
+      'creatingAccount': 'جاري إنشاء الحساب...',
       'passwordMismatch': 'كلمتا المرور غير متطابقتين',
       'haveAccountSignIn': 'لديك حساب بالفعل؟ سجّل الدخول',
       'noAccountSignUp': 'ليس لديك حساب؟ أنشئ حسابًا',
@@ -249,7 +278,7 @@ class AppStrings {
       'otpSendFailed': 'فشل إرسال رمز التحقق',
       'otpProviderMisconfigured': 'مزود الرسائل القصيرة غير مهيأ بشكل صحيح. يرجى التواصل مع الدعم.',
       'otpVerificationFailed': 'فشل التحقق من الرمز',
-      'supabaseSetupMissing': 'Supabase غير مهيأ. أضف SUPABASE_URL و SUPABASE_ANON_KEY.',
+      'pocketbaseSetupMissing': 'PocketBase غير مهيأ. قم بتعيين عنوان PocketBase.',
         'requestTowService': 'طلب خدمة السحب',
         'matchSubtitle': 'سنطابقك مع أفضل سائق',
         'quickRequestAvailable': 'طلب سريع متاح!',
@@ -261,6 +290,7 @@ class AppStrings {
         'availableTrucks': 'الشاحنات المتاحة',
         'closestAvailable': 'الأقرب المتاح',
         'requestThisTruckNow': 'اطلب هذه الشاحنة الآن',
+        'confirmRequest': 'تأكيد طلب السحب',
         'serviceDetails': 'تفاصيل الخدمة',
         'serviceDetailsSub': 'أخبرنا باحتياجات السحب الخاصة بك',
         'whenNeedService': 'متى تحتاج الخدمة؟',
@@ -283,6 +313,27 @@ class AppStrings {
         'realtimeTrackingSub': 'تتبع السائق مباشرة على الخريطة',
         'professionalService': 'خدمة احترافية',
         'professionalServiceSub': 'سائقون موثقون ومقيّمون',
+        'serviceProgress': 'تقدم الخدمة',
+        'serviceProgressRequested': 'تم استلام الطلب',
+        'serviceProgressAssigned': 'تم تخصيص السائق',
+        'serviceProgressEnRoute': 'السائق في الطريق',
+        'inProgress': 'قيد التنفيذ',
+        'trackPickup': 'موقع الالتقاط',
+        'trackDestination': 'الوجهة',
+        'trackYourDriver': 'سائقك',
+        'trackVehicle': 'المركبة',
+        'trackLicensePlate': 'رقم اللوحة',
+        'trackEstimatedArrival': 'وقت الوصول المتوقع',
+        'trackDriverOnTheWay': 'السائق في الطريق إليك',
+        'trackServiceCost': 'تكلفة الخدمة',
+        'trackPaymentNote': 'سيتم معالجة الدفع بعد إكمال الخدمة',
+        'trackNeedHelp': 'تحتاج مساعدة؟',
+        'trackCallDriver': 'اتصل بالسائق',
+        'trackSendMessage': 'أرسل رسالة',
+        'pending': 'قيد الانتظار',
+        'assigned': 'تم التخصيص',
+        'completed': 'مكتمل',
+        'cancelled': 'ملغي',
     },
   };
 
@@ -293,6 +344,7 @@ class AppStrings {
 
 class UserProfile {
   const UserProfile({
+    this.id,
     required this.firstName,
     required this.lastName,
     required this.email,
@@ -301,8 +353,11 @@ class UserProfile {
     required this.totalSpent,
     required this.memberSince,
     this.phoneNumber,
+    this.verified = false,
+    this.avatarUrl,
   });
 
+  final String? id;
   final String firstName;
   final String lastName;
   final String email;
@@ -311,6 +366,8 @@ class UserProfile {
   final String totalSpent;
   final String memberSince;
   final String? phoneNumber;
+  final bool verified;
+  final String? avatarUrl;
 
   String get fullName => '$firstName $lastName'.trim();
 }
@@ -349,6 +406,23 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _language = widget.language;
     _isDark = widget.isDark;
+    _loadUserStats();
+  }
+
+  int _totalRides = 0;
+  String _totalSpent = '0.000';
+
+  Future<void> _loadUserStats() async {
+    try {
+      final stats = await PocketBaseService.instance.getUserStats();
+      if (!mounted) return;
+      setState(() {
+        _totalRides = stats.totalRides;
+        _totalSpent = stats.totalSpent.toStringAsFixed(3);
+      });
+    } catch (_) {
+      // Keep defaults on error
+    }
   }
 
   void _handleThemeToggle(bool value) {
@@ -541,7 +615,7 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: Icons.directions_car_outlined,
             iconColor: const Color(0xFF2F6BFF),
             label: strings.text('totalRides'),
-            value: user.totalRides.toString(),
+            value: _totalRides.toString(),
             muted: muted,
           ),
           const SizedBox(height: 8),
@@ -550,7 +624,7 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: Icons.trending_up,
             iconColor: const Color(0xFF16A34A),
             label: strings.text('totalSpent'),
-            value: user.totalSpent,
+            value: _totalSpent,
             muted: muted,
           ),
           const SizedBox(height: 8),

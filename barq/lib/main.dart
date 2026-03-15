@@ -1,13 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'settings.dart';
+import 'package:pocketbase/pocketbase.dart';
+
 import 'get_estimate_page.dart';
+import 'models/tow_request_model.dart';
+import 'models/user_model.dart';
 import 'request_tow_page.dart';
-import 'track_service_page.dart';
+import 'services/pocketbase_service.dart';
+import 'settings.dart';
 import 'sign_in_page.dart';
 import 'sign_up_page.dart';
+import 'track_service_page.dart';
 
 const Color kLightningYellow = Color(0xFFF4C21E);
 const Color kLightningNavy = Color(0xFF0B1220);
@@ -17,14 +21,9 @@ const Color kLightningMuted = Color(0xFF9AA3B2);
 const Color kLightningLightBackground = Color(0xFFF7F7FB);
 const Color kLightningLightBorder = Color(0xFFE5E7EB);
 const Color kLightningLightMuted = Color(0xFF6B7280);
-const String SupabaseUrl = 'https://llxiibmiocjbescqaknb.supabase.co';
-const String SupabaseAnonKey = 'sb_publishable_k3YQMdYi3osgc54DkkU-bg_R7NUtwbE';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (SupabaseUrl.isNotEmpty && SupabaseAnonKey.isNotEmpty) {
-    await Supabase.initialize(url: SupabaseUrl, anonKey: SupabaseAnonKey);
-  }
   runApp(const MyApp());
 }
 
@@ -36,10 +35,15 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  final PocketBaseService _pocketBaseService = PocketBaseService.instance;
+
   ThemeMode _themeMode = ThemeMode.dark;
   AppLanguage _language = AppLanguage.en;
   bool _isAuthenticated = false;
   bool _showSignUp = false;
+  bool? _databaseReachable;
+  StreamSubscription<dynamic>? _authSubscription;
+
   UserProfile _currentUserProfile = const UserProfile(
     firstName: 'User',
     lastName: '',
@@ -49,32 +53,28 @@ class _MyAppState extends State<MyApp> {
     totalSpent: '0.000',
     memberSince: 'Now',
   );
-  StreamSubscription<AuthState>? _authSubscription;
-
-  bool get _isSupabaseConfigured {
-    return SupabaseUrl.isNotEmpty && SupabaseAnonKey.isNotEmpty;
-  }
 
   @override
   void initState() {
     super.initState();
-    if (_isSupabaseConfigured) {
-      final client = Supabase.instance.client;
-      _isAuthenticated = client.auth.currentSession != null;
-      _currentUserProfile = _buildUserProfile(client.auth.currentUser);
-      _authSubscription = client.auth.onAuthStateChange.listen((event) {
-        if (!mounted) {
-          return;
+    _isAuthenticated = _pocketBaseService.isAuthenticated;
+    _currentUserProfile = _buildUserProfile(_pocketBaseService.currentUserRecord);
+
+    _authSubscription = _pocketBaseService.client.authStore.onChange.listen((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isAuthenticated = _pocketBaseService.isAuthenticated;
+        _currentUserProfile =
+            _buildUserProfile(_pocketBaseService.currentUserRecord);
+        if (_isAuthenticated) {
+          _showSignUp = false;
         }
-        setState(() {
-          _isAuthenticated = event.session != null;
-          _currentUserProfile = _buildUserProfile(event.session?.user);
-          if (_isAuthenticated) {
-            _showSignUp = false;
-          }
-        });
       });
-    }
+    });
+
+    _refreshDatabaseStatus();
   }
 
   @override
@@ -83,11 +83,20 @@ class _MyAppState extends State<MyApp> {
     super.dispose();
   }
 
+  Future<void> _refreshDatabaseStatus() async {
+    final reachable = await _pocketBaseService.ping();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _databaseReachable = reachable;
+    });
+  }
+
   void _toggleTheme() {
     setState(() {
-      _themeMode = _themeMode == ThemeMode.dark
-          ? ThemeMode.light
-          : ThemeMode.dark;
+      _themeMode =
+          _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
     });
   }
 
@@ -109,8 +118,8 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
-  UserProfile _buildUserProfile(User? user) {
-    if (user == null) {
+  UserProfile _buildUserProfile(RecordModel? record) {
+    if (record == null) {
       return const UserProfile(
         firstName: 'User',
         lastName: '',
@@ -122,61 +131,44 @@ class _MyAppState extends State<MyApp> {
       );
     }
 
-    final metadata = user.userMetadata;
-    final fullName = (metadata?['full_name'] as String?)?.trim();
-    final fallbackEmail = (user.email ?? '').trim();
-    final fallbackFromEmail = fallbackEmail.contains('@')
-        ? fallbackEmail.split('@').first
-        : fallbackEmail;
+    final user = User.fromRecord(record);
+    final memberSince = '${user.created.year}-'
+        '${user.created.month.toString().padLeft(2, '0')}-'
+        '${user.created.day.toString().padLeft(2, '0')}';
 
-    final effectiveName = (fullName != null && fullName.isNotEmpty)
-        ? fullName
-        : fallbackFromEmail;
-
-    final nameParts = effectiveName.trim().split(RegExp(r'\s+'));
-    final firstName = nameParts.isNotEmpty && nameParts.first.isNotEmpty
-        ? nameParts.first
-        : 'User';
-    final lastName = nameParts.length > 1
-        ? nameParts.sublist(1).join(' ')
-        : '';
+    final phoneStr = user.phoneNumber > 0 ? user.phoneNumber.toString() : null;
 
     return UserProfile(
-      firstName: firstName,
-      lastName: lastName,
-      email: fallbackEmail.isNotEmpty ? fallbackEmail : 'unknown@example.com',
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email.isNotEmpty ? user.email : 'unknown@example.com',
       role: 'Customer',
       totalRides: 0,
       totalSpent: '0.000',
-      memberSince: 'Now',
-      phoneNumber: metadata?['phone'] as String?,
+      memberSince: memberSince,
+      phoneNumber: phoneStr,
+      verified: user.verified,
+      avatarUrl: user.avatarUrl(_pocketBaseService.serverUrl),
     );
   }
 
   Future<void> _logout() async {
-    if (_isSupabaseConfigured) {
-      await Supabase.instance.client.auth.signOut();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _currentUserProfile = const UserProfile(
-          firstName: 'User',
-          lastName: '',
-          email: 'unknown@example.com',
-          role: 'Customer',
-          totalRides: 0,
-          totalSpent: '0.000',
-          memberSince: 'Now',
-        );
-      });
-      return;
-    }
+    await _pocketBaseService.signOut();
     if (!mounted) {
       return;
     }
     setState(() {
       _isAuthenticated = false;
+      _currentUserProfile = const UserProfile(
+        firstName: 'User',
+        lastName: '',
+        email: 'unknown@example.com',
+        role: 'Customer',
+        totalRides: 0,
+        totalSpent: '0.000',
+        memberSince: 'Now',
+      );
     });
   }
 
@@ -214,59 +206,113 @@ class _MyAppState extends State<MyApp> {
           ? HomePage(
               user: _currentUserProfile,
               language: _language,
+              databaseReachable: _databaseReachable,
               onToggleLanguage: _toggleLanguage,
               onToggleTheme: _toggleTheme,
+              onRefreshDatabaseStatus: _refreshDatabaseStatus,
               onLogout: _logout,
             )
           : (_showSignUp
-                ? SignUpPage(
-                    language: _language,
-                    onToggleLanguage: _toggleLanguage,
-                    onAuthenticated: () {
-                      if (!mounted) {
-                        return;
-                      }
-                      setState(() {
-                        _isAuthenticated = true;
-                        _showSignUp = false;
-                      });
-                    },
-                    onGoToSignIn: _showSignInPage,
-                  )
-                : SignInPage(
-                    language: _language,
-                    onToggleLanguage: _toggleLanguage,
-                    onAuthenticated: () {
-                      if (!mounted) {
-                        return;
-                      }
-                      setState(() {
-                        _isAuthenticated = true;
-                        _showSignUp = false;
-                      });
-                    },
-                    onGoToSignUp: _showSignUpPage,
-                  )),
+              ? SignUpPage(
+                  language: _language,
+                  onToggleLanguage: _toggleLanguage,
+                  onAuthenticated: () {
+                    _refreshDatabaseStatus();
+                    if (!mounted) {
+                      return;
+                    }
+                    setState(() {
+                      _isAuthenticated = true;
+                      _showSignUp = false;
+                    });
+                  },
+                  onGoToSignIn: _showSignInPage,
+                )
+              : SignInPage(
+                  language: _language,
+                  onToggleLanguage: _toggleLanguage,
+                  onAuthenticated: () {
+                    _refreshDatabaseStatus();
+                    if (!mounted) {
+                      return;
+                    }
+                    setState(() {
+                      _isAuthenticated = true;
+                      _showSignUp = false;
+                    });
+                  },
+                  onGoToSignUp: _showSignUpPage,
+                )),
     );
   }
 }
 
 class ActiveRequest {
   const ActiveRequest({
+    required this.id,
     required this.driverName,
     required this.truckType,
     required this.rating,
     required this.etaMinutes,
     required this.distanceKm,
     required this.statusLabel,
+    this.pickupLocation = '',
+    this.destination = '',
+    this.licensePlate = '',
+    this.driverTotalRides = 0,
+    this.baseFare = 0,
+    this.distanceFare = 0,
+    this.pickupLat,
+    this.pickupLng,
+    this.destinationLat,
+    this.destinationLng,
+    this.driverLat,
+    this.driverLng,
   });
 
+  final String id;
   final String driverName;
   final String truckType;
   final double rating;
   final int etaMinutes;
   final double distanceKm;
   final String statusLabel;
+  final String pickupLocation;
+  final String destination;
+  final String licensePlate;
+  final int driverTotalRides;
+  final double baseFare;
+  final double distanceFare;
+  final double? pickupLat;
+  final double? pickupLng;
+  final double? destinationLat;
+  final double? destinationLng;
+  final double? driverLat;
+  final double? driverLng;
+
+  factory ActiveRequest.fromTowRequest(TowRequest request) {
+    return ActiveRequest(
+      id: request.id,
+      driverName: request.driverName ?? 'Assigning...',
+      truckType: request.vehicleType,
+      rating: request.driverRating ?? 0,
+      etaMinutes: request.etaMinutes ?? 0,
+      distanceKm: request.distanceKm ?? 0,
+      statusLabel: request.status,
+      pickupLocation: request.pickupLocation,
+      destination: request.destination,
+      licensePlate: request.licensePlate ?? '',
+      driverTotalRides: request.driverTotalRides ?? 0,
+      baseFare: request.baseFare ?? 0,
+      distanceFare: request.distanceFare ?? 0,
+      pickupLat: request.pickupLat,
+      pickupLng: request.pickupLng,
+      destinationLat: request.destinationLat,
+      destinationLng: request.destinationLng,
+      driverLat: request.driverLat,
+      driverLng: request.driverLng,
+    );
+  }
 }
 
 class HomePage extends StatefulWidget {
@@ -274,15 +320,19 @@ class HomePage extends StatefulWidget {
     super.key,
     required this.user,
     required this.language,
+    required this.databaseReachable,
     required this.onToggleLanguage,
     required this.onToggleTheme,
+    required this.onRefreshDatabaseStatus,
     required this.onLogout,
   });
 
   final UserProfile user;
   final AppLanguage language;
+  final bool? databaseReachable;
   final VoidCallback onToggleLanguage;
   final VoidCallback onToggleTheme;
+  final Future<void> Function() onRefreshDatabaseStatus;
   final VoidCallback onLogout;
 
   @override
@@ -290,28 +340,70 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final List<ActiveRequest> _activeRequests = const [
-    ActiveRequest(
-      driverName: 'Ahmed Al-Khalifa',
-      truckType: 'Flatbed Tow Truck',
-      rating: 4.8,
-      etaMinutes: 8,
-      distanceKm: 3.7,
-      statusLabel: 'En Route',
-    ),
-  ];
+  final PocketBaseService _pocketBaseService = PocketBaseService.instance;
 
+  List<ActiveRequest> _activeRequests = const <ActiveRequest>[];
+  List<ActiveRequest> _serviceHistory = const <ActiveRequest>[];
+  bool _isLoading = true;
+  bool _isRealtimeSubscribed = false;
   int _tabIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRequests();
+    _subscribeToRealtimeUpdates();
+  }
+
+  @override
+  void dispose() {
+    if (_isRealtimeSubscribed) {
+      _pocketBaseService.unsubscribeCurrentUserRequests();
+    }
+    super.dispose();
+  }
+
+  Future<void> _subscribeToRealtimeUpdates() async {
+    try {
+      await _pocketBaseService.subscribeCurrentUserRequests(() {
+        if (mounted) {
+          _loadRequests();
+        }
+      });
+      _isRealtimeSubscribed = true;
+    } catch (_) {
+      // Keep manual refresh path if realtime is unavailable.
+    }
+  }
+
+  Future<void> _loadRequests() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final active = await _pocketBaseService.getActiveRequests();
+      final history = await _pocketBaseService.getServiceHistory();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _activeRequests = active.map(ActiveRequest.fromTowRequest).toList();
+        _serviceHistory = history.map(ActiveRequest.fromTowRequest).toList();
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
 
   bool _isDark(BuildContext context) {
     return Theme.of(context).brightness == Brightness.dark;
-  }
-
-  List<Color> _backgroundGradient(BuildContext context) {
-    if (_isDark(context)) {
-      return const [Color(0xFF0B1220), Color(0xFF0E1728), Color(0xFF101B31)];
-    }
-    return const [Color(0xFFF7F7FB), Color(0xFFF1F4FB), Color(0xFFF7F7FB)];
   }
 
   Color _cardColor(BuildContext context) {
@@ -326,108 +418,212 @@ class _HomePageState extends State<HomePage> {
     return _isDark(context) ? kLightningMuted : kLightningLightMuted;
   }
 
-  Color _infoPillBackground(BuildContext context) {
-    return _isDark(context) ? const Color(0xFF101827) : const Color(0xFFF9FAFB);
+  String _statusLabel(String status, AppStrings strings) {
+    switch (status) {
+      case 'pending':
+        return strings.text('pending');
+      case 'assigned':
+        return strings.text('assigned');
+      case 'en_route':
+        return strings.text('enRoute');
+      case 'completed':
+        return strings.text('completed');
+      case 'cancelled':
+        return strings.text('cancelled');
+      default:
+        return status;
+    }
+  }
+
+  String _connectionTitle(AppLanguage language) {
+    return language == AppLanguage.ar ? 'اتصال قاعدة البيانات' : 'Database connection';
+  }
+
+  String _connectionMessage(AppLanguage language) {
+    final reachable = widget.databaseReachable;
+    if (reachable == true) {
+      return language == AppLanguage.ar
+          ? 'PocketBase متصل ويعمل.'
+          : 'PocketBase is connected and reachable.';
+    }
+    return language == AppLanguage.ar
+        ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
+        : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
   }
 
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings(widget.language);
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: _backgroundGradient(context),
-          ),
-        ),
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                  child: Column(
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: () async {
+            await widget.onRefreshDatabaseStatus();
+            await _loadRequests();
+          },
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            children: [
+              _buildTopBar(context, strings),
+              const SizedBox(height: 20),
+              Text(
+                strings.welcome(widget.user.firstName),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                strings.text('help'),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: _mutedColor(context),
+                    ),
+              ),
+              const SizedBox(height: 18),
+              if (widget.databaseReachable != true) ...[
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: _isDark(context)
+                        ? const Color(0xFF2A1A15)
+                        : const Color(0xFFFFF7ED),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFF97316)),
+                  ),
+                  child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildTopBar(context, strings),
-                      const SizedBox(height: 20),
-                      Text(
-                        strings.welcome(widget.user.firstName),
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Icon(Icons.cloud_off_outlined,
+                            color: Color(0xFFF97316)),
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        strings.text('help'),
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: _mutedColor(context),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _connectionTitle(widget.language),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _connectionMessage(widget.language),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              _pocketBaseService.serverUrl,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: _mutedColor(context)),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 18),
-                      _buildActionCard(
-                        context,
-                        icon: Icons.local_shipping_outlined,
-                        iconColor: kLightningYellow,
-                        title: strings.text('requestTow'),
-                        subtitle: strings.text('requestTowSub'),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const RequestTowPage(),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      _buildActionCard(
-                        context,
-                        icon: Icons.location_on_outlined,
-                        iconColor: const Color(0xFF22C55E),
-                        title: strings.text('trackService'),
-                        subtitle: strings.text('trackServiceSub'),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const TrackServicePage(),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      _buildActionCard(
-                        context,
-                        icon: Icons.attach_money,
-                        iconColor: const Color(0xFF60A5FA),
-                        title: strings.text('getEstimate'),
-                        subtitle: strings.text('getEstimateSub'),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => GetEstimatePage(
-                                language: widget.language,
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 18),
-                      _buildTabs(context, strings),
-                      const SizedBox(height: 16),
-                      if (_tabIndex == 0) ...[
-                        for (final request in _activeRequests) ...[
-                          _buildActiveRequestCard(context, request, strings),
-                          const SizedBox(height: 12),
-                        ],
-                      ] else
-                        _buildEmptyState(context, strings),
                     ],
                   ),
                 ),
-              );
-            },
+                const SizedBox(height: 16),
+              ],
+              _buildActionCard(
+                context,
+                icon: Icons.local_shipping_outlined,
+                iconColor: kLightningYellow,
+                title: strings.text('requestTow'),
+                subtitle: strings.text('requestTowSub'),
+                onTap: () async {
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => RequestTowPage(language: widget.language),
+                    ),
+                  );
+                  _loadRequests();
+                },
+              ),
+              const SizedBox(height: 12),
+              _buildActionCard(
+                context,
+                icon: Icons.map_outlined,
+                iconColor: const Color(0xFF16A34A),
+                title: strings.text('trackService'),
+                subtitle: strings.text('trackServiceSub'),
+                onTap: () {
+                  if (_activeRequests.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(strings.text('noHistoryTitle'))),
+                    );
+                    return;
+                  }
+
+                  final request = _activeRequests.first;
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => TrackServicePage(
+                        requestId: request.id,
+                        pickupLocation: request.pickupLocation,
+                        destinationLocation: request.destination,
+                        vehicleDescription: request.truckType,
+                        licensePlate: request.licensePlate,
+                        driverName: request.driverName,
+                        driverRating: request.rating,
+                        driverTotalRides: request.driverTotalRides,
+                        distanceKm: request.distanceKm,
+                        remainingDistanceKm: request.distanceKm,
+                        etaMinutes: request.etaMinutes,
+                        baseFare: request.baseFare,
+                        distanceFare: request.distanceFare,
+                        pickupLat: request.pickupLat,
+                        pickupLng: request.pickupLng,
+                        destinationLat: request.destinationLat,
+                        destinationLng: request.destinationLng,
+                        driverLat: request.driverLat,
+                        driverLng: request.driverLng,
+                        language: widget.language,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _buildActionCard(
+                context,
+                icon: Icons.attach_money,
+                iconColor: const Color(0xFF2563EB),
+                title: strings.text('getEstimate'),
+                subtitle: strings.text('getEstimateSub'),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => GetEstimatePage(language: widget.language),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 18),
+              _buildTabs(context, strings),
+              const SizedBox(height: 16),
+              if (_isLoading)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (_tabIndex == 0 && _activeRequests.isEmpty)
+                _buildEmptyState(context, strings)
+              else if (_tabIndex == 1 && _serviceHistory.isEmpty)
+                _buildEmptyState(context, strings)
+              else
+                ...(_tabIndex == 0 ? _activeRequests : _serviceHistory)
+                    .map((request) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: _buildRequestCard(context, request, strings),
+                        )),
+            ],
           ),
         ),
       ),
@@ -453,19 +649,16 @@ class _HomePageState extends State<HomePage> {
             children: [
               Text(
                 strings.text('appName'),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
               ),
+              const SizedBox(height: 2),
               Text(
                 strings.text('dashboard'),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: _mutedColor(context)),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: _mutedColor(context),
+                    ),
               ),
             ],
           ),
@@ -505,36 +698,28 @@ class _HomePageState extends State<HomePage> {
     required Color iconColor,
     required String title,
     required String subtitle,
-    VoidCallback? onTap,
+    required VoidCallback onTap,
   }) {
     return Material(
       color: Colors.transparent,
-      borderRadius: BorderRadius.circular(14),
       child: InkWell(
+        borderRadius: BorderRadius.circular(16),
         onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: _cardColor(context),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(color: _borderColor(context)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.3),
-                blurRadius: 16,
-                offset: const Offset(0, 10),
-              ),
-            ],
           ),
           child: Row(
             children: [
               Container(
-                width: 40,
-                height: 40,
+                width: 46,
+                height: 46,
                 decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(12),
+                  color: iconColor.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(14),
                 ),
                 child: Icon(icon, color: iconColor),
               ),
@@ -546,19 +731,20 @@ class _HomePageState extends State<HomePage> {
                     Text(
                       title,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                            fontWeight: FontWeight.w700,
+                          ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       subtitle,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: _mutedColor(context),
-                      ),
+                            color: _mutedColor(context),
+                          ),
                     ),
                   ],
                 ),
               ),
+              const Icon(Icons.chevron_right),
             ],
           ),
         ),
@@ -570,9 +756,8 @@ class _HomePageState extends State<HomePage> {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: _isDark(context)
-            ? const Color(0xFF1A2336)
-            : const Color(0xFFEFF1F5),
+        color:
+            _isDark(context) ? const Color(0xFF1A2336) : const Color(0xFFEFF1F5),
         borderRadius: BorderRadius.circular(24),
       ),
       child: Row(
@@ -597,7 +782,7 @@ class _HomePageState extends State<HomePage> {
     required String label,
     required int index,
   }) {
-    final bool isSelected = _tabIndex == index;
+    final isSelected = _tabIndex == index;
     return Expanded(
       child: GestureDetector(
         onTap: () {
@@ -615,11 +800,11 @@ class _HomePageState extends State<HomePage> {
             child: Text(
               label,
               style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: isSelected
-                    ? (_isDark(context) ? Colors.white : kLightningNavy)
-                    : _mutedColor(context),
-              ),
+                    fontWeight: FontWeight.w700,
+                    color: isSelected
+                        ? (_isDark(context) ? Colors.white : kLightningNavy)
+                        : _mutedColor(context),
+                  ),
             ),
           ),
         ),
@@ -627,7 +812,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildActiveRequestCard(
+  Widget _buildRequestCard(
     BuildContext context,
     ActiveRequest request,
     AppStrings strings,
@@ -650,10 +835,10 @@ class _HomePageState extends State<HomePage> {
                     ? const Color(0xFF202A3F)
                     : const Color(0xFFE5E7EB),
                 child: Text(
-                  request.driverName.substring(0, 1),
+                  request.driverName.isEmpty ? '?' : request.driverName[0],
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -664,65 +849,59 @@ class _HomePageState extends State<HomePage> {
                     Text(
                       request.driverName,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                            fontWeight: FontWeight.w700,
+                          ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       request.truckType,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: _mutedColor(context),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.star,
-                          size: 16,
-                          color: kLightningYellow,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          request.rating.toStringAsFixed(1),
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(fontWeight: FontWeight.w600),
-                        ),
-                      ],
+                            color: _mutedColor(context),
+                          ),
                     ),
                   ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: kLightningYellow,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
-                  strings.text('enRoute'),
+                  _statusLabel(request.statusLabel, strings),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: kLightningNavy,
-                    fontWeight: FontWeight.w600,
-                  ),
+                        color: kLightningNavy,
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          Text(
+            request.pickupLocation,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            request.destination,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _mutedColor(context),
+                ),
+          ),
           const SizedBox(height: 16),
           Row(
             children: [
-              _buildInfoPill(
+              _infoPill(
                 context,
                 icon: Icons.schedule,
                 label: strings.text('eta'),
                 value: '${request.etaMinutes} min',
               ),
               const SizedBox(width: 12),
-              _buildInfoPill(
+              _infoPill(
                 context,
                 icon: Icons.place_outlined,
                 label: strings.text('distance'),
@@ -735,7 +914,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildInfoPill(
+  Widget _infoPill(
     BuildContext context, {
     required IconData icon,
     required String label,
@@ -745,7 +924,7 @@ class _HomePageState extends State<HomePage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: _infoPillBackground(context),
+          color: _isDark(context) ? const Color(0xFF101827) : const Color(0xFFF9FAFB),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: _borderColor(context)),
         ),
@@ -758,16 +937,16 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Text(
                   label,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelSmall?.copyWith(color: _mutedColor(context)),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: _mutedColor(context),
+                      ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
               ],
             ),
@@ -779,8 +958,7 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildEmptyState(BuildContext context, AppStrings strings) {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: _cardColor(context),
         borderRadius: BorderRadius.circular(16),
@@ -788,20 +966,21 @@ class _HomePageState extends State<HomePage> {
       ),
       child: Column(
         children: [
-          Icon(Icons.history, size: 32, color: _mutedColor(context)),
-          const SizedBox(height: 8),
+          const Icon(Icons.inbox_outlined, size: 40, color: kLightningYellow),
+          const SizedBox(height: 12),
           Text(
             strings.text('noHistoryTitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             strings.text('noHistoryBody'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: _mutedColor(context)),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _mutedColor(context),
+                ),
           ),
         ],
       ),

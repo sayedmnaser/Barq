@@ -1,6 +1,9 @@
-import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:pocketbase/pocketbase.dart';
+
+import 'services/pocketbase_service.dart';
 import 'settings.dart';
 
 const Color kLightningYellow = Color(0xFFF4C21E);
@@ -25,25 +28,44 @@ class SignUpPage extends StatefulWidget {
 }
 
 class _SignUpPageState extends State<SignUpPage> {
-  final _formKey = GlobalKey<FormState>();
+  final PocketBaseService _pocketBaseService = PocketBaseService.instance;
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _otpController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
 
-  String? _otpPhone;
-  String? _otpEmail;
-  bool _otpSent = false;
-  bool _isSendingOtp = false;
-  bool _isVerifyingOtp = false;
+  bool _isSubmitting = false;
+  bool? _serverReachable;
 
-  bool get _isSupabaseConfigured {
-    try {
-      Supabase.instance.client;
-      return true;
-    } catch (_) {
-      return false;
+  bool get _isArabic => widget.language == AppLanguage.ar;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkConnection();
+  }
+
+  @override
+  void dispose() {
+    _fullNameController.dispose();
+    _emailController.dispose();
+    _phoneController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkConnection() async {
+    final reachable = await _pocketBaseService.ping();
+    if (!mounted) {
+      return;
     }
+    setState(() {
+      _serverReachable = reachable;
+    });
   }
 
   bool _isDark(BuildContext context) {
@@ -62,215 +84,93 @@ class _SignUpPageState extends State<SignUpPage> {
     return _isDark(context) ? kLightningMuted : kLightningLightMuted;
   }
 
-  @override
-  void dispose() {
-    _fullNameController.dispose();
-    _emailController.dispose();
-    _phoneController.dispose();
-    _otpController.dispose();
-    super.dispose();
-  }
-
-  String? _normalizedPhone(String value) {
-    final input = value.trim().replaceAll(RegExp(r'[\s-]'), '');
-    if (input.isEmpty) {
-      return null;
-    }
-
-    if (input.startsWith('+')) {
-      return RegExp(r'^\+[1-9]\d{7,14}$').hasMatch(input) ? input : null;
-    }
-
-    final digitsOnly = input.replaceAll(RegExp(r'\D'), '');
-    if (RegExp(r'^\d{8}$').hasMatch(digitsOnly)) {
-      return '+973$digitsOnly';
-    }
-
-    return null;
-  }
-
-  bool _isValidPhone(String value) {
-    return _normalizedPhone(value) != null;
-  }
-
-  Future<void> _sendOtp(AppStrings strings) async {
-    final email = _emailController.text.trim();
-    final normalizedPhone = _normalizedPhone(_phoneController.text);
-
-    if (email.isEmpty || !email.contains('@')) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(strings.text('validEmail'))));
-      return;
-    }
-
-    if (!_isSupabaseConfigured) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('supabaseSetupMissing'))),
-      );
-      return;
-    }
-
-    if (normalizedPhone == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(strings.text('validPhone'))));
-      return;
-    }
-
-    _phoneController.text = normalizedPhone;
-
-    setState(() {
-      _isSendingOtp = true;
-    });
-
-    try {
-      await Supabase.instance.client.auth.signInWithOtp(
-        email: email,
-        data: {
-          'full_name': _fullNameController.text.trim(),
-          'phone': normalizedPhone,
-        },
-      );
-
-      await Supabase.instance.client.auth.signInWithOtp(
-        phone: normalizedPhone,
-        data: {
-          'full_name': _fullNameController.text.trim(),
-          'email': email,
-        },
-      );
-
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _otpPhone = normalizedPhone;
-        _otpEmail = email;
-        _otpSent = true;
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(strings.text('otpSentTo'))));
-    } on AuthException catch (exception) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(exception.message)),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('otpSendFailed'))),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSendingOtp = false;
-        });
-      }
-    }
-  }
-
-  Future<bool> _verifyOtp(AppStrings strings) async {
-    final otpPhone = _otpPhone;
-    final otpEmail = _otpEmail;
-    final code = _otpController.text.trim();
-
-    if (otpPhone == null || otpEmail == null || code.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(strings.text('otpInvalid'))));
-      return false;
-    }
-
-    setState(() {
-      _isVerifyingOtp = true;
-    });
-
-    try {
-      AuthResponse? response;
-
-      try {
-        response = await Supabase.instance.client.auth.verifyOTP(
-          type: OtpType.sms,
-          phone: otpPhone,
-          token: code,
-        );
-      } on AuthException {
-        response = null;
-      }
-
-      if (response == null) {
-        response = await Supabase.instance.client.auth.verifyOTP(
-          type: OtpType.email,
-          email: otpEmail,
-          token: code,
-        );
-      }
-
-      if (!mounted) {
-        return false;
-      }
-
-      final isVerified =
-          response.session != null ||
-          response.user != null ||
-          Supabase.instance.client.auth.currentUser != null;
-
-      if (!isVerified) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.text('otpInvalid'))),
-        );
-      }
-
-      return isVerified;
-    } on AuthException catch (exception) {
-      if (!mounted) {
-        return false;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(exception.message)),
-      );
-      return false;
-    } catch (_) {
-      if (!mounted) {
-        return false;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('otpVerificationFailed'))),
-      );
-      return false;
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isVerifyingOtp = false;
-        });
-      }
-    }
-  }
-
   Future<void> _submit(AppStrings strings) async {
     if (!_formKey.currentState!.validate()) {
       return;
     }
 
-    if (!_otpSent) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(strings.text('sendOtpFirst'))));
+    final rawPhone = _phoneController.text.trim();
+    if (rawPhone.isNotEmpty && _pocketBaseService.normalizePhone(rawPhone) == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('validPhone'))),
+      );
       return;
     }
 
-    final verified = await _verifyOtp(strings);
-    if (!verified) {
-      return;
-    }
+    setState(() {
+      _isSubmitting = true;
+    });
 
-    widget.onAuthenticated();
+    try {
+      await _pocketBaseService.signUp(
+        fullName: _fullNameController.text.trim(),
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        confirmPassword: _confirmPasswordController.text,
+        phone: rawPhone,
+      );
+
+      if (!mounted) {
+        return;
+      }
+      widget.onAuthenticated();
+    } on ClientException catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      String message = strings.text('signUpFailed');
+      final data = e.response['data'];
+      if (data is Map) {
+        final errors = data.entries
+            .where((entry) => entry.value is Map && entry.value['message'] != null)
+            .map((entry) => '${entry.key}: ${entry.value['message']}')
+            .toList(growable: false);
+        if (errors.isNotEmpty) {
+          message = errors.join('\n');
+        }
+      } else if (e.response['message'] is String) {
+        message = e.response['message'] as String;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } on SocketException {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('pocketbaseSetupMissing'))),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('signUpFailed'))),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  String get _connectionTitle =>
+      _isArabic ? 'اتصال PocketBase' : 'PocketBase connection';
+
+  String get _connectionMessage {
+    if (_serverReachable == true) {
+      return _isArabic
+          ? 'الخادم متصل ويمكن إنشاء الحساب.'
+          : 'Server is reachable and ready for account creation.';
+    }
+    return _isArabic
+        ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
+        : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
   }
 
   @override
@@ -283,12 +183,12 @@ class _SignUpPageState extends State<SignUpPage> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 420),
+              constraints: const BoxConstraints(maxWidth: 440),
               child: Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
                   color: _cardColor(context),
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: _borderColor(context)),
                 ),
                 child: Form(
@@ -311,7 +211,9 @@ class _SignUpPageState extends State<SignUpPage> {
                           Expanded(
                             child: Text(
                               strings.text('appName'),
-                              style: Theme.of(context).textTheme.titleLarge
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleLarge
                                   ?.copyWith(fontWeight: FontWeight.w700),
                             ),
                           ),
@@ -328,14 +230,75 @@ class _SignUpPageState extends State<SignUpPage> {
                       const SizedBox(height: 20),
                       Text(
                         strings.text('signUp'),
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
                       ),
                       const SizedBox(height: 6),
                       Text(
                         strings.text('signUpSubtitle'),
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: _mutedColor(context),
+                              color: _mutedColor(context),
+                            ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: _serverReachable == true
+                              ? const Color(0xFFECFDF3)
+                              : (_isDark(context)
+                                  ? const Color(0xFF2A1A15)
+                                  : const Color(0xFFFFF7ED)),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _serverReachable == true
+                                ? const Color(0xFF22C55E)
+                                : const Color(0xFFF97316),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              _serverReachable == true
+                                  ? Icons.cloud_done_outlined
+                                  : Icons.cloud_off_outlined,
+                              color: _serverReachable == true
+                                  ? const Color(0xFF16A34A)
+                                  : const Color(0xFFF97316),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _connectionTitle,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _connectionMessage,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    _pocketBaseService.serverUrl,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(color: _mutedColor(context)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -374,7 +337,7 @@ class _SignUpPageState extends State<SignUpPage> {
                       TextFormField(
                         controller: _phoneController,
                         keyboardType: TextInputType.phone,
-                        textInputAction: TextInputAction.done,
+                        textInputAction: TextInputAction.next,
                         decoration: InputDecoration(
                           labelText: strings.text('phoneNumber'),
                           hintText: strings.text('phoneFormatHint'),
@@ -382,72 +345,56 @@ class _SignUpPageState extends State<SignUpPage> {
                         ),
                         validator: (value) {
                           final phone = value?.trim() ?? '';
-                          if (!_isValidPhone(phone)) {
+                          if (phone.isNotEmpty &&
+                              _pocketBaseService.normalizePhone(phone) == null) {
                             return strings.text('validPhone');
                           }
                           return null;
                         },
                       ),
                       const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _otpController,
-                              keyboardType: TextInputType.number,
-                              textInputAction: TextInputAction.done,
-                              decoration: InputDecoration(
-                                labelText: strings.text('otpCode'),
-                                border: const OutlineInputBorder(),
-                              ),
-                              validator: (value) {
-                                if ((value ?? '').trim().isEmpty) {
-                                  return strings.text('requiredField');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          FilledButton(
-                            onPressed: _isSendingOtp
-                                ? null
-                                : () {
-                                    _sendOtp(strings);
-                                  },
-                            style: FilledButton.styleFrom(
-                              backgroundColor: kLightningYellow,
-                              foregroundColor: kLightningNavy,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 16,
-                              ),
-                            ),
-                            child: Text(
-                              _isSendingOtp
-                                  ? strings.text('sendingOtp')
-                                  : (_otpSent
-                                        ? strings.text('resendOtp')
-                                        : strings.text('sendOtp')),
-                            ),
-                          ),
-                        ],
+                      TextFormField(
+                        controller: _passwordController,
+                        obscureText: true,
+                        textInputAction: TextInputAction.next,
+                        decoration: InputDecoration(
+                          labelText: strings.text('password'),
+                          border: const OutlineInputBorder(),
+                        ),
+                        validator: (value) {
+                          if ((value ?? '').length < 8) {
+                            return strings.text('passwordTooShort');
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _confirmPasswordController,
+                        obscureText: true,
+                        textInputAction: TextInputAction.done,
+                        decoration: InputDecoration(
+                          labelText: strings.text('confirmPassword'),
+                          border: const OutlineInputBorder(),
+                        ),
+                        validator: (value) {
+                          if (value != _passwordController.text) {
+                            return strings.text('passwordMismatch');
+                          }
+                          return null;
+                        },
                       ),
                       const SizedBox(height: 18),
                       FilledButton(
-                        onPressed: _isVerifyingOtp
-                            ? null
-                            : () {
-                                _submit(strings);
-                              },
+                        onPressed: _isSubmitting ? null : () => _submit(strings),
                         style: FilledButton.styleFrom(
                           backgroundColor: kLightningYellow,
                           foregroundColor: kLightningNavy,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
                         child: Text(
-                          _isVerifyingOtp
-                              ? strings.text('verifyingOtp')
+                          _isSubmitting
+                              ? strings.text('creatingAccount')
                               : strings.text('createAccount'),
                         ),
                       ),

@@ -1,440 +1,450 @@
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:pocketbase/pocketbase.dart';
+
+import 'models/place_result.dart';
+import 'services/bahrain_map_service.dart';
+import 'services/pocketbase_service.dart';
 import 'settings.dart';
+import 'track_service_page.dart';
+import 'widgets/barq_live_map.dart';
+import 'widgets/place_search_sheet.dart';
+
+enum TowVehicleKind { sedan, suv, motorcycle, flatbed }
 
 class RequestTowPage extends StatefulWidget {
-  const RequestTowPage({super.key});
+  const RequestTowPage({super.key, required this.language});
+
+  final AppLanguage language;
 
   @override
   State<RequestTowPage> createState() => _RequestTowPageState();
 }
 
 class _RequestTowPageState extends State<RequestTowPage> {
+  final PocketBaseService _pocketBaseService = PocketBaseService.instance;
+  final TextEditingController _pickupController = TextEditingController();
+  final TextEditingController _destinationController = TextEditingController();
+  final TextEditingController _detailsController = TextEditingController();
+
+  PlaceResult? _pickupPlace;
+  PlaceResult? _destinationPlace;
+  RouteInfo? _routeInfo;
+
+  TowVehicleKind _vehicleKind = TowVehicleKind.flatbed;
   int _serviceTiming = 0;
+  bool _isLoadingRoute = false;
+  bool _isSubmitting = false;
+  String? _routeError;
+
+  bool get _isArabic => widget.language == AppLanguage.ar;
+
+  @override
+  void dispose() {
+    _pickupController.dispose();
+    _destinationController.dispose();
+    _detailsController.dispose();
+    super.dispose();
+  }
+
+  String _vehicleLabel(AppStrings strings, TowVehicleKind kind) {
+    switch (kind) {
+      case TowVehicleKind.sedan:
+        return strings.text('estimateSedan');
+      case TowVehicleKind.suv:
+        return strings.text('estimateSuv');
+      case TowVehicleKind.motorcycle:
+        return strings.text('estimateMotorcycle');
+      case TowVehicleKind.flatbed:
+        return strings.text('estimateFlatbed');
+    }
+  }
+
+  double get _baseFare {
+    switch (_vehicleKind) {
+      case TowVehicleKind.sedan:
+        return 8.0;
+      case TowVehicleKind.suv:
+        return 10.5;
+      case TowVehicleKind.motorcycle:
+        return 6.5;
+      case TowVehicleKind.flatbed:
+        return 13.5;
+    }
+  }
+
+  double get _perKmRate {
+    switch (_vehicleKind) {
+      case TowVehicleKind.sedan:
+        return 0.85;
+      case TowVehicleKind.suv:
+        return 1.0;
+      case TowVehicleKind.motorcycle:
+        return 0.70;
+      case TowVehicleKind.flatbed:
+        return 1.35;
+    }
+  }
+
+  double get _distanceKm => _routeInfo?.distanceKm ?? 0;
+  int get _etaMinutes => _routeInfo?.durationMinutes ?? (_serviceTiming == 0 ? 15 : 30);
+  double get _distanceFare => _distanceKm * _perKmRate;
+  double get _totalFare => _baseFare + _distanceFare;
+
+  Future<void> _pickLocation({required bool isPickup, required AppStrings strings}) async {
+    final selected = await BahrainPlaceSearchSheet.show(
+      context,
+      language: widget.language,
+      title: isPickup ? strings.text('pickupLocation') : strings.text('destination'),
+      initialQuery: isPickup ? _pickupController.text : _destinationController.text,
+    );
+
+    if (selected == null) {
+      return;
+    }
+
+    setState(() {
+      if (isPickup) {
+        _pickupPlace = selected;
+        _pickupController.text = selected.label;
+      } else {
+        _destinationPlace = selected;
+        _destinationController.text = selected.label;
+      }
+    });
+
+    await _refreshRoute();
+  }
+
+  Future<void> _refreshRoute() async {
+    if (_pickupPlace == null || _destinationPlace == null) {
+      setState(() {
+        _routeInfo = null;
+        _routeError = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoadingRoute = true;
+      _routeError = null;
+    });
+
+    try {
+      final route = await BahrainMapService.buildRoute(
+        start: _pickupPlace!.latLng,
+        end: _destinationPlace!.latLng,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _routeInfo = route;
+        _isLoadingRoute = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _routeInfo = null;
+        _isLoadingRoute = false;
+        _routeError = _isArabic
+            ? 'تعذر حساب المسار الآن.'
+            : 'Could not calculate the route right now.';
+      });
+    }
+  }
+
+  Future<void> _submitRequest(AppStrings strings) async {
+    if (_pickupPlace == null || _destinationPlace == null) {
+      final message = _isArabic
+          ? 'يرجى اختيار موقع الالتقاط والوجهة.'
+          : 'Please select both pickup and destination locations.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      final towRequest = await _pocketBaseService.createTowRequest(
+        pickupLocation: _pickupController.text.trim(),
+        destination: _destinationController.text.trim(),
+        vehicleType: _vehicleLabel(strings, _vehicleKind),
+        details: _detailsController.text.trim(),
+        serviceTiming: _serviceTiming == 0 ? 'immediate' : 'scheduled',
+        pickupLat: _pickupPlace?.latitude,
+        pickupLng: _pickupPlace?.longitude,
+        destinationLat: _destinationPlace?.latitude,
+        destinationLng: _destinationPlace?.longitude,
+        distanceKm: _distanceKm == 0 ? null : _distanceKm,
+        etaMinutes: _etaMinutes,
+        baseFare: _baseFare,
+        distanceFare: _distanceFare,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => TrackServicePage(
+            requestId: towRequest.id,
+            pickupLocation: towRequest.pickupLocation,
+            destinationLocation: towRequest.destination,
+            vehicleDescription: towRequest.vehicleType,
+            licensePlate: towRequest.licensePlate ?? 'Pending',
+            driverName: towRequest.driverName ?? 'Assigning...',
+            driverRating: towRequest.driverRating ?? 0,
+            driverTotalRides: towRequest.driverTotalRides ?? 0,
+            distanceKm: towRequest.distanceKm ?? _distanceKm,
+            remainingDistanceKm: towRequest.distanceKm ?? _distanceKm,
+            etaMinutes: towRequest.etaMinutes ?? _etaMinutes,
+            baseFare: towRequest.baseFare ?? _baseFare,
+            distanceFare: towRequest.distanceFare ?? _distanceFare,
+            pickupLat: _pickupPlace?.latitude,
+            pickupLng: _pickupPlace?.longitude,
+            destinationLat: _destinationPlace?.latitude,
+            destinationLng: _destinationPlace?.longitude,
+            language: widget.language,
+          ),
+        ),
+      );
+    } on ClientException catch (e) {
+      if (!mounted) {
+        return;
+      }
+      final message =
+          e.response['message'] as String? ?? strings.text('signInFailed');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('signInFailed'))),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  String get _mapHeadline => _isArabic ? 'خريطة البحرين المباشرة' : 'Live Bahrain map';
+  String get _mapSubline {
+    if (_pickupPlace != null && _destinationPlace != null && _routeInfo != null) {
+      return _isArabic
+          ? '${_routeInfo!.distanceKm.toStringAsFixed(1)} كم • وصول تقريبي ${_routeInfo!.durationMinutes} دقيقة'
+          : '${_routeInfo!.distanceKm.toStringAsFixed(1)} km • approx. ${_routeInfo!.durationMinutes} min';
+    }
+    return _isArabic
+        ? 'اختر موقع الالتقاط والوجهة لإظهار المسار.'
+        : 'Pick pickup and destination to display the route.';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final language = Directionality.of(context) == TextDirection.rtl
-        ? AppLanguage.ar
-        : AppLanguage.en;
-    final strings = AppStrings(language);
+    final strings = AppStrings(widget.language);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(strings.text('requestTowService')),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(20),
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              strings.text('matchSubtitle'),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).textTheme.bodySmall?.color?.withValues(
-                          alpha: 0.7,
-                        ),
-                  ),
-            ),
-          ),
-        ),
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildQuickBanner(context, strings),
+            BarqLiveMap(
+              height: 280,
+              pickup: _pickupPlace,
+              destination: _destinationPlace,
+              routePoints: _routeInfo?.points ?? const <LatLng>[],
+              headline: _mapHeadline,
+              subline: _isLoadingRoute ? (_isArabic ? 'جاري تحميل المسار...' : 'Loading route...') : _mapSubline,
+            ),
             const SizedBox(height: 16),
-            _buildMapCard(context, strings),
+            if (_routeError != null) ...[
+              Text(
+                _routeError!,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            _sectionCard(
+              context,
+              title: strings.text('serviceDetails'),
+              subtitle: strings.text('serviceDetailsSub'),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _locationField(
+                    context,
+                    label: strings.text('pickupLocation'),
+                    controller: _pickupController,
+                    onTap: () => _pickLocation(isPickup: true, strings: strings),
+                  ),
+                  const SizedBox(height: 12),
+                  _locationField(
+                    context,
+                    label: strings.text('destination'),
+                    controller: _destinationController,
+                    onTap: () => _pickLocation(isPickup: false, strings: strings),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<TowVehicleKind>(
+                    initialValue: _vehicleKind,
+                    decoration: InputDecoration(
+                      labelText: strings.text('vehicleType'),
+                      border: const OutlineInputBorder(),
+                    ),
+                    items: TowVehicleKind.values
+                        .map(
+                          (kind) => DropdownMenuItem<TowVehicleKind>(
+                            value: kind,
+                            child: Text(_vehicleLabel(strings, kind)),
+                          ),
+                        )
+                        .toList(growable: false),
+                    onChanged: (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      setState(() {
+                        _vehicleKind = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    strings.text('whenNeedService'),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  SegmentedButton<int>(
+                    segments: [
+                      ButtonSegment<int>(
+                        value: 0,
+                        label: Text(strings.text('immediate')),
+                      ),
+                      ButtonSegment<int>(
+                        value: 1,
+                        label: Text(strings.text('scheduleLater')),
+                      ),
+                    ],
+                    selected: <int>{_serviceTiming},
+                    onSelectionChanged: (selection) {
+                      if (selection.isEmpty) {
+                        return;
+                      }
+                      setState(() {
+                        _serviceTiming = selection.first;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _detailsController,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: strings.text('additionalDetails'),
+                      hintText: strings.text('additionalDetailsHint'),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
-            _buildServiceDetails(context, strings),
-            const SizedBox(height: 16),
-            _buildAiCard(context, strings),
-            const SizedBox(height: 16),
-            _buildIncludedCard(context, strings),
+            _sectionCard(
+              context,
+              title: strings.text('estimateResultTitle'),
+              subtitle: _isArabic
+                  ? 'يتم تحديث التكلفة حسب المسار المحدد.'
+                  : 'Pricing updates from the selected route.',
+              child: Column(
+                children: [
+                  _priceRow(
+                    context,
+                    label: strings.text('estimateBaseFare'),
+                    value: _baseFare,
+                  ),
+                  const SizedBox(height: 10),
+                  _priceRow(
+                    context,
+                    label:
+                        '${strings.text('estimateDistanceFare')} (${_distanceKm.toStringAsFixed(1)} km)',
+                    value: _distanceFare,
+                  ),
+                  const SizedBox(height: 10),
+                  _priceRow(
+                    context,
+                    label: strings.text('eta'),
+                    valueText: '$_etaMinutes min',
+                  ),
+                  const Divider(height: 24),
+                  _priceRow(
+                    context,
+                    label: strings.text('estimateTotal'),
+                    value: _totalFare,
+                    emphasize: true,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: _isSubmitting ? null : () => _submitRequest(strings),
+                child: _isSubmitting
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(strings.text('confirmRequest')),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildQuickBanner(BuildContext context, AppStrings strings) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFECFDF3),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFBBF7D0)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: const BoxDecoration(
-              color: Color(0xFF16A34A),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.flash_on, color: Colors.white, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  strings.text('quickRequestAvailable'),
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  strings.text('quickRequestBody'),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: const Color(0xFF166534),
-                      ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMapCard(BuildContext context, AppStrings strings) {
-    return Container(
-      height: 260,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        gradient: const LinearGradient(
-          colors: [Color(0xFFE6F4FF), Color(0xFFEFFAF0)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: Stack(
-        children: [
-          Positioned(
-            top: 16,
-            left: 16,
-            child: _legendCard(context, strings),
-          ),
-          Positioned(
-            top: 16,
-            right: 16,
-            child: OutlinedButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.refresh, size: 16),
-              label: Text(strings.text('refreshLocation')),
-              style: OutlinedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: const Color(0xFF111827),
-              ),
-            ),
-          ),
-          Positioned(
-            left: 120,
-            top: 70,
-            child: _mapPin(color: const Color(0xFF16A34A)),
-          ),
-          Positioned(
-            right: 80,
-            top: 90,
-            child: _mapPin(color: const Color(0xFFF97316)),
-          ),
-          Positioned(
-            right: 120,
-            top: 120,
-            child: _mapPin(color: const Color(0xFF2563EB)),
-          ),
-          Positioned(
-            left: 40,
-            top: 120,
-            right: 40,
-            child: _driverCard(context, strings),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _legendCard(BuildContext context, AppStrings strings) {
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _legendRow(const Color(0xFF2563EB), strings.text('yourLocation')),
-          const SizedBox(height: 6),
-          _legendRow(const Color(0xFF16A34A), strings.text('closestTruck')),
-          const SizedBox(height: 6),
-          _legendRow(const Color(0xFFF97316), strings.text('availableTrucks')),
-        ],
-      ),
-    );
-  }
-
-  Widget _legendRow(Color color, String label) {
-    return Row(
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 12)),
-      ],
-    );
-  }
-
-  Widget _mapPin({required Color color}) {
-    return Container(
-      width: 32,
-      height: 32,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.12),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: const Icon(Icons.local_shipping, color: Colors.white, size: 16),
-    );
-  }
-
-  Widget _driverCard(BuildContext context, AppStrings strings) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF22C55E), width: 2),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      strings.text('closestAvailable'),
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: const Color(0xFF6B7280),
-                          ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Ahmed Al-Khalifa',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF16A34A),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '5 min',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const Icon(Icons.place_outlined, size: 16, color: Color(0xFF6B7280)),
-              const SizedBox(width: 4),
-              Text('1.2 mi away', style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(width: 12),
-              const Icon(Icons.star, size: 16, color: Color(0xFFF59E0B)),
-              const SizedBox(width: 4),
-              Text('4.9', style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.flash_on, size: 18),
-              label: Text(strings.text('requestThisTruckNow')),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF16A34A),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildServiceDetails(BuildContext context, AppStrings strings) {
-    return _sectionCard(
-      context,
-      title: strings.text('serviceDetails'),
-      subtitle: strings.text('serviceDetailsSub'),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            strings.text('whenNeedService'),
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-          ),
-          const SizedBox(height: 8),
-          SegmentedButton<int>(
-            segments: [
-              ButtonSegment(value: 0, label: Text(strings.text('immediate'))),
-              ButtonSegment(value: 1, label: Text(strings.text('scheduleLater'))),
-            ],
-            selected: {_serviceTiming},
-            onSelectionChanged: (selection) {
-              if (selection.isNotEmpty) {
-                setState(() {
-                  _serviceTiming = selection.first;
-                });
-              }
-            },
-          ),
-          const SizedBox(height: 16),
-          _fieldLabel(context, strings.text('pickupLocation')),
-          const SizedBox(height: 6),
-          _fieldChip(context, 'Manama, Bahrain'),
-          const SizedBox(height: 12),
-          _fieldLabel(context, strings.text('destination')),
-          const SizedBox(height: 6),
-          _fieldChip(context, strings.text('destinationHint')),
-          const SizedBox(height: 12),
-          _fieldLabel(context, strings.text('vehicleType')),
-          const SizedBox(height: 6),
-          _fieldChip(context, strings.text('vehicleTypeHint')),
-          const SizedBox(height: 12),
-          _fieldLabel(context, strings.text('additionalDetails')),
-          const SizedBox(height: 6),
-          _fieldChip(context, strings.text('additionalDetailsHint')),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAiCard(BuildContext context, AppStrings strings) {
-    return _sectionCard(
-      context,
-      title: strings.text('aiSmartMatching'),
-      subtitle: strings.text('aiSmartBody'),
-      leading: const Icon(Icons.auto_awesome, color: Color(0xFF2563EB)),
-    );
-  }
-
-  Widget _buildIncludedCard(BuildContext context, AppStrings strings) {
-    return _sectionCard(
-      context,
-      title: strings.text('whatsIncluded'),
-      child: Column(
-        children: [
-          _includedRow(
-            context,
-            icon: Icons.bolt,
-            title: strings.text('fastResponse'),
-            subtitle: strings.text('fastResponseSub'),
-          ),
-          const SizedBox(height: 10),
-          _includedRow(
-            context,
-            icon: Icons.location_on_outlined,
-            title: strings.text('realtimeTracking'),
-            subtitle: strings.text('realtimeTrackingSub'),
-          ),
-          const SizedBox(height: 10),
-          _includedRow(
-            context,
-            icon: Icons.verified_outlined,
-            title: strings.text('professionalService'),
-            subtitle: strings.text('professionalServiceSub'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _includedRow(
+  Widget _locationField(
     BuildContext context, {
-    required IconData icon,
-    required String title,
-    required String subtitle,
+    required String label,
+    required TextEditingController controller,
+    required VoidCallback onTap,
   }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(icon, size: 18, color: const Color(0xFF2563EB)),
+    return TextFormField(
+      controller: controller,
+      readOnly: true,
+      onTap: onTap,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+        suffixIcon: IconButton(
+          onPressed: onTap,
+          icon: const Icon(Icons.map_outlined),
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).textTheme.bodySmall?.color?.withValues(
-                            alpha: 0.7,
-                          ),
-                    ),
-              ),
-            ],
-          ),
-        ),
-      ],
+      ),
     );
   }
 
@@ -442,8 +452,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
     BuildContext context, {
     required String title,
     String? subtitle,
-    Widget? child,
-    Widget? leading,
+    required Widget child,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -451,92 +460,55 @@ class _RequestTowPageState extends State<RequestTowPage> {
         color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Theme.of(context).dividerColor),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 6),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              if (leading != null) ...[
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Center(child: leading),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
                 ),
-                const SizedBox(width: 10),
-              ],
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ),
-            ],
           ),
           if (subtitle != null) ...[
             const SizedBox(height: 4),
             Text(
               subtitle,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).textTheme.bodySmall?.color?.withValues(
-                          alpha: 0.7,
-                        ),
+                    color: Theme.of(context).hintColor,
                   ),
             ),
           ],
-          if (child != null) ...[
-            const SizedBox(height: 12),
-            child,
-          ],
+          const SizedBox(height: 16),
+          child,
         ],
       ),
     );
   }
 
-  Widget _fieldLabel(BuildContext context, String text) {
-    return Text(
-      text,
-      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
-    );
-  }
+  Widget _priceRow(
+    BuildContext context, {
+    required String label,
+    double? value,
+    String? valueText,
+    bool emphasize = false,
+  }) {
+    final style = emphasize
+        ? Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            )
+        : Theme.of(context).textTheme.bodyMedium;
 
-  Widget _fieldChip(BuildContext context, String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.location_on_outlined, size: 18, color: Color(0xFF9CA3AF)),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              text,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).textTheme.bodySmall?.color,
-                  ),
-            ),
+    return Row(
+      children: [
+        Expanded(child: Text(label, style: style)),
+        Text(
+          valueText ?? '${(value ?? 0).toStringAsFixed(3)} BHD',
+          style: style?.copyWith(
+            color: emphasize ? const Color(0xFF16A34A) : null,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

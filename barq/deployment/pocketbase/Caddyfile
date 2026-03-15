@@ -1,0 +1,13 @@
+{$DOMAIN} {
+  tls {$EMAIL}
+
+  request_body {
+    max_size 20MB
+  }
+
+  reverse_proxy pocketbase:8090 {
+    transport http {
+      read_timeout 360s
+    }
+  }
+}

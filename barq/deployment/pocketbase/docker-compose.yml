@@ -1,0 +1,33 @@
+services:
+  pocketbase:
+    build:
+      context: .
+      args:
+        PB_VERSION: ${PB_VERSION:-0.36.6}
+    restart: unless-stopped
+    expose:
+      - "8090"
+    volumes:
+      - ./pb_data:/pb/pb_data
+      - ./pb_hooks:/pb/pb_hooks
+      - ./pb_migrations:/pb/pb_migrations
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - pocketbase
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+      EMAIL: ${EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

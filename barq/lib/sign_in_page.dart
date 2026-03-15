@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:pocketbase/pocketbase.dart';
 
+import 'services/pocketbase_service.dart';
 import 'settings.dart';
 
 const Color kLightningYellow = Color(0xFFF4C21E);
@@ -25,21 +26,37 @@ class SignInPage extends StatefulWidget {
 }
 
 class _SignInPageState extends State<SignInPage> {
-  final _formKey = GlobalKey<FormState>();
+  final PocketBaseService _pocketBaseService = PocketBaseService.instance;
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _otpController = TextEditingController();
-  String? _otpEmail;
-  bool _otpSent = false;
-  bool _isSendingOtp = false;
-  bool _isVerifyingOtp = false;
+  final TextEditingController _passwordController = TextEditingController();
 
-  bool get _isSupabaseConfigured {
-    try {
-      Supabase.instance.client;
-      return true;
-    } catch (_) {
-      return false;
+  bool _isSubmitting = false;
+  bool? _serverReachable;
+
+  bool get _isArabic => widget.language == AppLanguage.ar;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkConnection();
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkConnection() async {
+    final reachable = await _pocketBaseService.ping();
+    if (!mounted) {
+      return;
     }
+    setState(() {
+      _serverReachable = reachable;
+    });
   }
 
   bool _isDark(BuildContext context) {
@@ -58,153 +75,61 @@ class _SignInPageState extends State<SignInPage> {
     return _isDark(context) ? kLightningMuted : kLightningLightMuted;
   }
 
-  @override
-  void dispose() {
-    _emailController.dispose();
-    _otpController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _sendOtp(AppStrings strings) async {
-    final email = _emailController.text.trim();
-
-    if (email.isEmpty || !email.contains('@')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('validEmail'))),
-      );
-      return;
-    }
-
-    if (!_isSupabaseConfigured) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('supabaseSetupMissing'))),
-      );
-      return;
-    }
-
-    setState(() {
-      _isSendingOtp = true;
-    });
-
-    try {
-      await Supabase.instance.client.auth.signInWithOtp(
-        email: email,
-        shouldCreateUser: false,
-      );
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _otpEmail = email;
-        _otpSent = true;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('otpSentTo'))),
-      );
-    } on AuthException catch (exception) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(exception.message)),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('otpSendFailed'))),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSendingOtp = false;
-        });
-      }
-    }
-  }
-
-  Future<bool> _verifyOtp(AppStrings strings) async {
-    final otpEmail = _otpEmail;
-    final code = _otpController.text.trim();
-
-    if (otpEmail == null || code.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('otpInvalid'))),
-      );
-      return false;
-    }
-
-    setState(() {
-      _isVerifyingOtp = true;
-    });
-
-    try {
-      final response = await Supabase.instance.client.auth.verifyOTP(
-        type: OtpType.email,
-        email: otpEmail,
-        token: code,
-      );
-
-      if (!mounted) {
-        return false;
-      }
-
-      final isVerified =
-          response.session != null ||
-          response.user != null ||
-          Supabase.instance.client.auth.currentUser != null;
-
-      if (!isVerified) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(strings.text('otpInvalid'))),
-        );
-      }
-
-      return isVerified;
-    } on AuthException catch (exception) {
-      if (!mounted) {
-        return false;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(exception.message)),
-      );
-      return false;
-    } catch (_) {
-      if (!mounted) {
-        return false;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('signInFailed'))),
-      );
-      return false;
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isVerifyingOtp = false;
-        });
-      }
-    }
-  }
-
   Future<void> _submit(AppStrings strings) async {
     if (!_formKey.currentState!.validate()) {
       return;
     }
 
-    if (!_otpSent) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('sendOtpFirst'))),
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      await _pocketBaseService.signIn(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
       );
-      return;
+      if (!mounted) {
+        return;
+      }
+      widget.onAuthenticated();
+    } on ClientException catch (e) {
+      if (!mounted) {
+        return;
+      }
+      final message =
+          e.response['message'] as String? ?? strings.text('signInFailed');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('signInFailed'))),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
     }
+  }
 
-    final verified = await _verifyOtp(strings);
-    if (!verified) {
-      return;
+  String get _connectionTitle =>
+      _isArabic ? 'اتصال PocketBase' : 'PocketBase connection';
+
+  String get _connectionMessage {
+    if (_serverReachable == true) {
+      return _isArabic
+          ? 'الخادم متصل وجاهز لتسجيل الدخول.'
+          : 'Server is reachable and ready for sign in.';
     }
-
-    widget.onAuthenticated();
+    return _isArabic
+        ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
+        : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
   }
 
   @override
@@ -217,12 +142,12 @@ class _SignInPageState extends State<SignInPage> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 420),
+              constraints: const BoxConstraints(maxWidth: 440),
               child: Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
                   color: _cardColor(context),
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: _borderColor(context)),
                 ),
                 child: Form(
@@ -245,7 +170,9 @@ class _SignInPageState extends State<SignInPage> {
                           Expanded(
                             child: Text(
                               strings.text('appName'),
-                              style: Theme.of(context).textTheme.titleLarge
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleLarge
                                   ?.copyWith(fontWeight: FontWeight.w700),
                             ),
                           ),
@@ -262,14 +189,75 @@ class _SignInPageState extends State<SignInPage> {
                       const SizedBox(height: 20),
                       Text(
                         strings.text('signIn'),
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
                       ),
                       const SizedBox(height: 6),
                       Text(
                         strings.text('signInSubtitle'),
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: _mutedColor(context),
+                              color: _mutedColor(context),
+                            ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: _serverReachable == true
+                              ? const Color(0xFFECFDF3)
+                              : (_isDark(context)
+                                  ? const Color(0xFF2A1A15)
+                                  : const Color(0xFFFFF7ED)),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: _serverReachable == true
+                                ? const Color(0xFF22C55E)
+                                : const Color(0xFFF97316),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              _serverReachable == true
+                                  ? Icons.cloud_done_outlined
+                                  : Icons.cloud_off_outlined,
+                              color: _serverReachable == true
+                                  ? const Color(0xFF16A34A)
+                                  : const Color(0xFFF97316),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _connectionTitle,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _connectionMessage,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    _pocketBaseService.serverUrl,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(color: _mutedColor(context)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -290,65 +278,32 @@ class _SignInPageState extends State<SignInPage> {
                         },
                       ),
                       const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _otpController,
-                              keyboardType: TextInputType.number,
-                              textInputAction: TextInputAction.done,
-                              decoration: InputDecoration(
-                                labelText: strings.text('otpCode'),
-                                border: const OutlineInputBorder(),
-                              ),
-                              validator: (value) {
-                                if ((value ?? '').trim().isEmpty) {
-                                  return strings.text('requiredField');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          FilledButton(
-                            onPressed: _isSendingOtp
-                                ? null
-                                : () {
-                                    _sendOtp(strings);
-                                  },
-                            style: FilledButton.styleFrom(
-                              backgroundColor: kLightningYellow,
-                              foregroundColor: kLightningNavy,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 16,
-                              ),
-                            ),
-                            child: Text(
-                              _isSendingOtp
-                                  ? strings.text('sendingOtp')
-                                  : (_otpSent
-                                        ? strings.text('resendOtp')
-                                        : strings.text('sendOtp')),
-                            ),
-                          ),
-                        ],
+                      TextFormField(
+                        controller: _passwordController,
+                        obscureText: true,
+                        textInputAction: TextInputAction.done,
+                        decoration: InputDecoration(
+                          labelText: strings.text('password'),
+                          border: const OutlineInputBorder(),
+                        ),
+                        validator: (value) {
+                          if ((value ?? '').trim().isEmpty) {
+                            return strings.text('requiredField');
+                          }
+                          return null;
+                        },
                       ),
                       const SizedBox(height: 18),
                       FilledButton(
-                        onPressed: _isVerifyingOtp
-                            ? null
-                            : () {
-                                _submit(strings);
-                              },
+                        onPressed: _isSubmitting ? null : () => _submit(strings),
                         style: FilledButton.styleFrom(
                           backgroundColor: kLightningYellow,
                           foregroundColor: kLightningNavy,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
                         child: Text(
-                          _isVerifyingOtp
-                              ? strings.text('verifyingOtp')
+                          _isSubmitting
+                              ? strings.text('signingIn')
                               : strings.text('signIn'),
                         ),
                       ),
