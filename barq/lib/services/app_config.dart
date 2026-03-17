@@ -3,7 +3,7 @@ class AppConfig {
 
   static const String pocketBaseUrl = String.fromEnvironment(
     'POCKETBASE_URL',
-    defaultValue: 'https://api.barqapp.com',
+    defaultValue: 'https://api.barq-api.uk',
   );
 
   static const String geocodingBaseUrl = String.fromEnvironment(
@@ -26,7 +26,7 @@ class AppConfig {
     defaultValue: 'com.barq.app',
   );
 
-  static const String publicApiPlaceholder = 'https://api.barqapp.com';
+  static const String publicApiPlaceholder = 'https://api.barq-api.uk';
 
   static String get normalizedPocketBaseUrl => _stripTrailingSlash(pocketBaseUrl);
   static String get normalizedGeocodingBaseUrl => _stripTrailingSlash(geocodingBaseUrl);

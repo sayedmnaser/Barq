@@ -26,7 +26,7 @@ barq/
 For production on a real phone, point the app to a public HTTPS backend:
 
 ```bash
-flutter run --dart-define=POCKETBASE_URL=https://api.barqapp.com
+flutter run --dart-define=POCKETBASE_URL=https://api.barq-api.uk
 ```
 
 For local testing on a real phone on the same Wi-Fi:

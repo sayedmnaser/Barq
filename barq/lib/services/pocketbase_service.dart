@@ -2,17 +2,45 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:pocketbase/pocketbase.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/tow_request_model.dart';
 import 'app_config.dart';
 
 class PocketBaseService {
-  PocketBaseService._internal()
-      : _client = PocketBase(_normalizeBaseUrl(configuredUrl));
+  PocketBaseService._internal(PocketBase client) : _client = client;
 
   static const String configuredUrl = AppConfig.pocketBaseUrl;
+  static const int sessionDays = 15;
+  static const String _loginTimestampKey = 'pb_login_timestamp';
 
-  static final PocketBaseService instance = PocketBaseService._internal();
+  static PocketBaseService? _instance;
+
+  static PocketBaseService get instance {
+    if (_instance == null) {
+      throw StateError(
+        'PocketBaseService not initialized. Call PocketBaseService.init() first.',
+      );
+    }
+    return _instance!;
+  }
+
+  /// Initializes the service with a persistent auth store.
+  /// Must be called once before accessing [instance].
+  static Future<void> init() async {
+    if (_instance != null) return;
+    final prefs = await SharedPreferences.getInstance();
+    final store = AsyncAuthStore(
+      save: (String data) async => prefs.setString('pb_auth', data),
+      initial: prefs.getString('pb_auth'),
+    );
+    final client = PocketBase(
+      _normalizeBaseUrl(configuredUrl),
+      authStore: store,
+    );
+    _instance = PocketBaseService._internal(client);
+    await _instance!._enforceSessionExpiry(prefs);
+  }
 
   final PocketBase _client;
 
@@ -52,10 +80,67 @@ class PocketBaseService {
     required String password,
   }) async {
     await _client.collection('users').authWithPassword(email.trim(), password);
+    await _stampLoginTime();
   }
 
   Future<void> signOut() async {
     _client.authStore.clear();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_loginTimestampKey);
+  }
+
+  /// Request an OTP code. [identity] can be an email or a phone number.
+  /// For phone numbers, PocketBase must have an SMS provider hook configured.
+  Future<String> requestOtp(String identity) async {
+    final result = await _client.collection('users').requestOTP(identity.trim());
+    return result.otpId;
+  }
+
+  /// Authenticate using the OTP code returned to the user.
+  Future<void> authWithOtp({
+    required String otpId,
+    required String code,
+  }) async {
+    await _client.collection('users').authWithOTP(otpId, code.trim());
+    await _stampLoginTime();
+  }
+
+  /// Record the current time as the login timestamp.
+  Future<void> _stampLoginTime() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      _loginTimestampKey,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// Clear session if older than [sessionDays].
+  Future<void> _enforceSessionExpiry(SharedPreferences prefs) async {
+    if (!_client.authStore.isValid) return;
+    final stamp = prefs.getInt(_loginTimestampKey);
+    if (stamp == null) {
+      // No timestamp recorded — treat as expired.
+      _client.authStore.clear();
+      return;
+    }
+    final loginDate = DateTime.fromMillisecondsSinceEpoch(stamp);
+    if (DateTime.now().difference(loginDate).inDays >= sessionDays) {
+      _client.authStore.clear();
+      await prefs.remove(_loginTimestampKey);
+    }
+  }
+
+  /// Convenience: resolve an identifier to the value PocketBase expects.
+  /// If [value] looks like a phone number, convert to the username format
+  /// stored during sign-up ("phone97336380308").
+  /// Otherwise assume it is an email and return as-is.
+  String resolveIdentity(String value) {
+    final trimmed = value.trim();
+    if (trimmed.contains('@')) return trimmed;
+    final digits = trimmed.replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 8) return 'phone973$digits';
+    if (digits.length > 8) return 'phone$digits';
+    return trimmed;
   }
 
   Future<void> signUp({
@@ -72,9 +157,12 @@ class PocketBaseService {
       'name': fullName.trim(),
     };
 
+    // Store normalized phone as username so PocketBase can find the user
+    // by phone number during OTP sign-in.
     final normalizedPhone = normalizePhone(phone ?? '');
     if (normalizedPhone != null) {
       createBody['phoneNumber'] = normalizedPhone;
+      createBody['username'] = 'phone$normalizedPhone';
     }
 
     try {
@@ -82,7 +170,20 @@ class PocketBaseService {
     } on ClientException catch (e) {
       if (createBody.containsKey('phoneNumber') && _isPhoneFieldRejected(e)) {
         createBody.remove('phoneNumber');
+        createBody.remove('username');
         await _client.collection('users').create(body: createBody);
+      } else if (createBody.containsKey('username') && _isUsernameRejected(e)) {
+        createBody.remove('username');
+        try {
+          await _client.collection('users').create(body: createBody);
+        } on ClientException catch (e2) {
+          if (createBody.containsKey('phoneNumber') && _isPhoneFieldRejected(e2)) {
+            createBody.remove('phoneNumber');
+            await _client.collection('users').create(body: createBody);
+          } else {
+            rethrow;
+          }
+        }
       } else {
         rethrow;
       }
@@ -118,6 +219,16 @@ class PocketBaseService {
 
     final message = (response['message'] as String?)?.toLowerCase() ?? '';
     return message.contains('phonenumber') || message.contains('phone');
+  }
+
+  bool _isUsernameRejected(ClientException e) {
+    final response = e.response;
+    final data = response['data'];
+    if (data is Map && data.containsKey('username')) {
+      return true;
+    }
+    final message = (response['message'] as String?)?.toLowerCase() ?? '';
+    return message.contains('username');
   }
 
   Future<TowRequest> createTowRequest({

@@ -27,17 +27,21 @@ class SignUpPage extends StatefulWidget {
   State<SignUpPage> createState() => _SignUpPageState();
 }
 
+enum _SignUpOtpDelivery { email, phone }
+
 class _SignUpPageState extends State<SignUpPage> {
   final PocketBaseService _pocketBaseService = PocketBaseService.instance;
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
-  final TextEditingController _confirmPasswordController =
-      TextEditingController();
+  final TextEditingController _otpController = TextEditingController();
 
+  _SignUpOtpDelivery _delivery = _SignUpOtpDelivery.email;
   bool _isSubmitting = false;
+  bool _otpSent = false;
+  String? _otpId;
+  bool _accountCreated = false;
   bool? _serverReachable;
 
   bool get _isArabic => widget.language == AppLanguage.ar;
@@ -53,109 +57,139 @@ class _SignUpPageState extends State<SignUpPage> {
     _fullNameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
-    _passwordController.dispose();
-    _confirmPasswordController.dispose();
+    _otpController.dispose();
     super.dispose();
   }
 
   Future<void> _checkConnection() async {
     final reachable = await _pocketBaseService.ping();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _serverReachable = reachable;
-    });
+    if (!mounted) return;
+    setState(() => _serverReachable = reachable);
   }
 
-  bool _isDark(BuildContext context) {
-    return Theme.of(context).brightness == Brightness.dark;
-  }
+  bool _isDark(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark;
 
-  Color _cardColor(BuildContext context) {
-    return _isDark(context) ? kLightningCard : Colors.white;
-  }
+  Color _cardColor(BuildContext context) =>
+      _isDark(context) ? kLightningCard : Colors.white;
 
-  Color _borderColor(BuildContext context) {
-    return _isDark(context) ? kLightningBorder : kLightningLightBorder;
-  }
+  Color _borderColor(BuildContext context) =>
+      _isDark(context) ? kLightningBorder : kLightningLightBorder;
 
-  Color _mutedColor(BuildContext context) {
-    return _isDark(context) ? kLightningMuted : kLightningLightMuted;
-  }
+  Color _mutedColor(BuildContext context) =>
+      _isDark(context) ? kLightningMuted : kLightningLightMuted;
 
-  Future<void> _submit(AppStrings strings) async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
+  /// Step 1 — create the account (no password needed when using OTP).
+  /// Then immediately request an OTP so the user can verify.
+  Future<void> _createAndSendOtp(AppStrings strings) async {
+    if (!_formKey.currentState!.validate()) return;
 
-    final rawPhone = _phoneController.text.trim();
-    if (rawPhone.isNotEmpty && _pocketBaseService.normalizePhone(rawPhone) == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(strings.text('validPhone'))),
-      );
-      return;
-    }
-
-    setState(() {
-      _isSubmitting = true;
-    });
+    setState(() => _isSubmitting = true);
 
     try {
-      await _pocketBaseService.signUp(
-        fullName: _fullNameController.text.trim(),
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-        confirmPassword: _confirmPasswordController.text,
-        phone: rawPhone,
-      );
+      // Create user with a random strong password (PocketBase requires one).
+      // Authentication will happen via OTP, so the password is never shown.
+      final email = _emailController.text.trim();
+      final phone = _phoneController.text.trim();
+      final tempPassword = 'Otp${DateTime.now().millisecondsSinceEpoch}!';
 
-      if (!mounted) {
-        return;
+      if (!_accountCreated) {
+        await _pocketBaseService.signUp(
+          fullName: _fullNameController.text.trim(),
+          email: email,
+          password: tempPassword,
+          confirmPassword: tempPassword,
+          phone: phone.isNotEmpty ? phone : null,
+        );
+        // signUp also signs in, but we want OTP-based auth going forward.
+        await _pocketBaseService.signOut();
+        _accountCreated = true;
       }
-      widget.onAuthenticated();
+
+      // Request OTP to the selected channel.
+      final identity = _delivery == _SignUpOtpDelivery.email
+          ? email
+          : _pocketBaseService.resolveIdentity(phone);
+      final otpId = await _pocketBaseService.requestOtp(identity);
+
+      if (!mounted) return;
+      setState(() {
+        _otpId = otpId;
+        _otpSent = true;
+        _isSubmitting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('otpSentTo'))),
+      );
     } on ClientException catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
 
       String message = strings.text('signUpFailed');
       final data = e.response['data'];
       if (data is Map) {
         final errors = data.entries
-            .where((entry) => entry.value is Map && entry.value['message'] != null)
+            .where((entry) =>
+                entry.value is Map && entry.value['message'] != null)
             .map((entry) => '${entry.key}: ${entry.value['message']}')
             .toList(growable: false);
-        if (errors.isNotEmpty) {
-          message = errors.join('\n');
-        }
+        if (errors.isNotEmpty) message = errors.join('\n');
       } else if (e.response['message'] is String) {
         message = e.response['message'] as String;
       }
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
     } on SocketException {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.text('pocketbaseSetupMissing'))),
       );
     } catch (_) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(strings.text('signUpFailed'))),
       );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSubmitting = false;
-        });
-      }
+    }
+  }
+
+  /// Step 2 — verify OTP and authenticate.
+  Future<void> _verifyOtp(AppStrings strings) async {
+    final code = _otpController.text.trim();
+    if (code.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('otpInvalid'))),
+      );
+      return;
+    }
+    if (_otpId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('sendOtpFirst'))),
+      );
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
+    try {
+      await _pocketBaseService.authWithOtp(otpId: _otpId!, code: code);
+      if (!mounted) return;
+      widget.onAuthenticated();
+    } on ClientException catch (e) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      final msg = e.response['message'] as String? ??
+          strings.text('otpVerificationFailed');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(strings.text('otpVerificationFailed'))),
+      );
     }
   }
 
@@ -196,12 +230,15 @@ class _SignUpPageState extends State<SignUpPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      // ── Header ──
                       Row(
                         children: [
                           ClipRRect(
                             borderRadius: BorderRadius.circular(14),
                             child: Image.asset(
-                              'lib/src/logo/white_mod.png',
+                              _isDark(context)
+                                  ? 'lib/src/logo/file_00000000decc7246a92d743d9b9850f3.png'
+                                  : 'lib/src/logo/file_0000000031dc72468f1c079a0115f272.png',
                               width: 44,
                               height: 44,
                               fit: BoxFit.cover,
@@ -230,18 +267,22 @@ class _SignUpPageState extends State<SignUpPage> {
                       const SizedBox(height: 20),
                       Text(
                         strings.text('signUp'),
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 6),
                       Text(
                         strings.text('signUpSubtitle'),
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: _mutedColor(context),
-                            ),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: _mutedColor(context)),
                       ),
                       const SizedBox(height: 16),
+
+                      // ── Connection banner ──
                       Container(
                         padding: const EdgeInsets.all(14),
                         decoration: BoxDecoration(
@@ -278,14 +319,14 @@ class _SignUpPageState extends State<SignUpPage> {
                                     style: Theme.of(context)
                                         .textTheme
                                         .titleSmall
-                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                        ?.copyWith(
+                                            fontWeight: FontWeight.w700),
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
                                     _connectionMessage,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall,
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
@@ -293,7 +334,8 @@ class _SignUpPageState extends State<SignUpPage> {
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall
-                                        ?.copyWith(color: _mutedColor(context)),
+                                        ?.copyWith(
+                                            color: _mutedColor(context)),
                                   ),
                                 ],
                               ),
@@ -302,8 +344,11 @@ class _SignUpPageState extends State<SignUpPage> {
                         ),
                       ),
                       const SizedBox(height: 20),
+
+                      // ── Registration fields (disabled after account created) ──
                       TextFormField(
                         controller: _fullNameController,
+                        enabled: !_accountCreated,
                         textInputAction: TextInputAction.next,
                         decoration: InputDecoration(
                           labelText: strings.text('fullName'),
@@ -319,6 +364,7 @@ class _SignUpPageState extends State<SignUpPage> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _emailController,
+                        enabled: !_accountCreated,
                         keyboardType: TextInputType.emailAddress,
                         textInputAction: TextInputAction.next,
                         decoration: InputDecoration(
@@ -336,8 +382,9 @@ class _SignUpPageState extends State<SignUpPage> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _phoneController,
+                        enabled: !_accountCreated,
                         keyboardType: TextInputType.phone,
-                        textInputAction: TextInputAction.next,
+                        textInputAction: TextInputAction.done,
                         decoration: InputDecoration(
                           labelText: strings.text('phoneNumber'),
                           hintText: strings.text('phoneFormatHint'),
@@ -346,58 +393,111 @@ class _SignUpPageState extends State<SignUpPage> {
                         validator: (value) {
                           final phone = value?.trim() ?? '';
                           if (phone.isNotEmpty &&
-                              _pocketBaseService.normalizePhone(phone) == null) {
+                              _pocketBaseService.normalizePhone(phone) ==
+                                  null) {
                             return strings.text('validPhone');
                           }
                           return null;
                         },
                       ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _passwordController,
-                        obscureText: true,
-                        textInputAction: TextInputAction.next,
-                        decoration: InputDecoration(
-                          labelText: strings.text('password'),
-                          border: const OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if ((value ?? '').length < 8) {
-                            return strings.text('passwordTooShort');
-                          }
-                          return null;
-                        },
+                      const SizedBox(height: 16),
+
+                      // ── OTP delivery toggle ──
+                      Row(
+                        children: [
+                          Text(
+                            strings.text('otpDelivery'),
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                          const SizedBox(width: 12),
+                          ChoiceChip(
+                            label: Text(strings.text('otpViaEmail')),
+                            selected:
+                                _delivery == _SignUpOtpDelivery.email,
+                            onSelected: (_) {
+                              setState(() {
+                                _delivery = _SignUpOtpDelivery.email;
+                                if (_accountCreated) {
+                                  _otpSent = false;
+                                  _otpId = null;
+                                }
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: Text(strings.text('otpViaPhone')),
+                            selected:
+                                _delivery == _SignUpOtpDelivery.phone,
+                            onSelected: (_) {
+                              setState(() {
+                                _delivery = _SignUpOtpDelivery.phone;
+                                if (_accountCreated) {
+                                  _otpSent = false;
+                                  _otpId = null;
+                                }
+                              });
+                            },
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _confirmPasswordController,
-                        obscureText: true,
-                        textInputAction: TextInputAction.done,
-                        decoration: InputDecoration(
-                          labelText: strings.text('confirmPassword'),
-                          border: const OutlineInputBorder(),
+                      const SizedBox(height: 14),
+
+                      // ── Create account + send OTP ──
+                      if (!_otpSent)
+                        FilledButton(
+                          onPressed: _isSubmitting
+                              ? null
+                              : () => _createAndSendOtp(strings),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: kLightningYellow,
+                            foregroundColor: kLightningNavy,
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          child: Text(
+                            _isSubmitting
+                                ? strings.text('sendingOtp')
+                                : strings.text('createAccount'),
+                          ),
                         ),
-                        validator: (value) {
-                          if (value != _passwordController.text) {
-                            return strings.text('passwordMismatch');
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 18),
-                      FilledButton(
-                        onPressed: _isSubmitting ? null : () => _submit(strings),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: kLightningYellow,
-                          foregroundColor: kLightningNavy,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
+
+                      // ── OTP code entry + verify ──
+                      if (_otpSent) ...[
+                        TextFormField(
+                          controller: _otpController,
+                          keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.done,
+                          decoration: InputDecoration(
+                            labelText: strings.text('otpCode'),
+                            border: const OutlineInputBorder(),
+                          ),
                         ),
-                        child: Text(
-                          _isSubmitting
-                              ? strings.text('creatingAccount')
-                              : strings.text('createAccount'),
+                        const SizedBox(height: 12),
+                        FilledButton(
+                          onPressed: _isSubmitting
+                              ? null
+                              : () => _verifyOtp(strings),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: kLightningYellow,
+                            foregroundColor: kLightningNavy,
+                            padding:
+                                const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          child: Text(
+                            _isSubmitting
+                                ? strings.text('verifyingOtp')
+                                : strings.text('createAccount'),
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: _isSubmitting
+                              ? null
+                              : () => _createAndSendOtp(strings),
+                          child: Text(strings.text('resendOtp')),
+                        ),
+                      ],
                       const SizedBox(height: 12),
                       TextButton(
                         onPressed: widget.onGoToSignIn,

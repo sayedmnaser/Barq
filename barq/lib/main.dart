@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:pocketbase/pocketbase.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'get_estimate_page.dart';
 import 'models/tow_request_model.dart';
@@ -24,6 +25,7 @@ const Color kLightningLightMuted = Color(0xFF6B7280);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await PocketBaseService.init();
   runApp(const MyApp());
 }
 
@@ -57,6 +59,7 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
+    _loadPreferences();
     _isAuthenticated = _pocketBaseService.isAuthenticated;
     _currentUserProfile = _buildUserProfile(_pocketBaseService.currentUserRecord);
 
@@ -93,17 +96,39 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
+  Future<void> _loadPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      final isDark = prefs.getBool('isDarkMode') ?? true;
+      _themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
+      final langCode = prefs.getString('language') ?? 'en';
+      _language = langCode == 'ar' ? AppLanguage.ar : AppLanguage.en;
+    });
+  }
+
+  Future<void> _saveTheme(bool isDark) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isDarkMode', isDark);
+  }
+
+  Future<void> _saveLanguage(AppLanguage lang) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('language', lang == AppLanguage.ar ? 'ar' : 'en');
+  }
+
   void _toggleTheme() {
     setState(() {
       _themeMode =
           _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
     });
+    _saveTheme(_themeMode == ThemeMode.dark);
   }
 
   void _toggleLanguage() {
     setState(() {
       _language = _language == AppLanguage.en ? AppLanguage.ar : AppLanguage.en;
     });
+    _saveLanguage(_language);
   }
 
   void _showSignInPage() {
@@ -636,7 +661,9 @@ class _HomePageState extends State<HomePage> {
         ClipRRect(
           borderRadius: BorderRadius.circular(14),
           child: Image.asset(
-            'lib/src/logo/white_mod.png',
+            Theme.of(context).brightness == Brightness.dark
+                ? 'lib/src/logo/file_00000000decc7246a92d743d9b9850f3.png'
+                : 'lib/src/logo/file_0000000031dc72468f1c079a0115f272.png',
             width: 44,
             height: 44,
             fit: BoxFit.cover,

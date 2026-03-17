@@ -13,6 +13,7 @@ dependencies:
   pocketbase: ^0.23.2
   flutter_map: ^8.2.2
   latlong2: ^0.9.1
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:
@@ -24,3 +25,5 @@ flutter:
   assets:
     - assets/images/white_mod.png
     - lib/src/logo/white_mod.png
+    - lib/src/logo/file_00000000decc7246a92d743d9b9850f3.png
+    - lib/src/logo/file_0000000031dc72468f1c079a0115f272.png
