@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'models/place_result.dart';
+import 'services/app_preferences_service.dart';
 import 'services/bahrain_map_service.dart';
+import 'services/location_service.dart';
 import 'settings.dart';
 import 'widgets/barq_live_map.dart';
 import 'widgets/place_search_sheet.dart';
@@ -19,6 +21,10 @@ class GetEstimatePage extends StatefulWidget {
 }
 
 class _GetEstimatePageState extends State<GetEstimatePage> {
+  static const double _minimumFareBhd = 5.0;
+  static const double _maximumDayFareBhd = 20.0;
+  static const double _nightSurchargeBhd = 5.0;
+
   final TextEditingController _pickupController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
 
@@ -29,15 +35,33 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
   EstimateVehicleType _vehicleType = EstimateVehicleType.sedan;
   bool _nightService = false;
   bool _isLoadingRoute = false;
+  bool _isFetchingCurrentLocation = false;
+  bool _shareLocationEnabled = true;
   String? _routeError;
 
   bool get _isArabic => widget.language == AppLanguage.ar;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLocationPreferences();
+  }
 
   @override
   void dispose() {
     _pickupController.dispose();
     _destinationController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadLocationPreferences() async {
+    final enabled = await AppPreferencesService.getShareLocationEnabled();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _shareLocationEnabled = enabled;
+    });
   }
 
   String _vehicleTypeLabel(AppStrings strings, EstimateVehicleType type) {
@@ -53,18 +77,7 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
     }
   }
 
-  double get _baseFare {
-    switch (_vehicleType) {
-      case EstimateVehicleType.sedan:
-        return 7.0;
-      case EstimateVehicleType.suv:
-        return 9.5;
-      case EstimateVehicleType.motorcycle:
-        return 6.0;
-      case EstimateVehicleType.flatbed:
-        return 12.0;
-    }
-  }
+  double get _baseFare => _minimumFareBhd;
 
   double get _perKmRate {
     switch (_vehicleType) {
@@ -80,17 +93,30 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
   }
 
   double get _distanceKm => _routeInfo?.distanceKm ?? 0;
-  double get _distanceFare => _distanceKm * _perKmRate;
-  double get _serviceFee => 1.5;
-  double get _surcharge => _nightService ? (_baseFare + _distanceFare + _serviceFee) * 0.2 : 0;
-  double get _total => _baseFare + _distanceFare + _serviceFee + _surcharge;
+  double get _rawDistanceFare => _distanceKm * _perKmRate;
+  double get _distanceFare {
+    final cappedDistanceFare =
+        _rawDistanceFare.clamp(0.0, _maximumDayFareBhd - _minimumFareBhd);
+    return cappedDistanceFare.toDouble();
+  }
 
-  Future<void> _pickLocation({required bool isPickup, required AppStrings strings}) async {
+  double get _serviceFee => 0.0;
+  double get _dayFare => (_baseFare + _distanceFare)
+      .clamp(_minimumFareBhd, _maximumDayFareBhd)
+      .toDouble();
+  double get _surcharge => _nightService ? _nightSurchargeBhd : 0;
+  double get _total => _dayFare + _surcharge;
+
+  Future<void> _pickLocation(
+      {required bool isPickup, required AppStrings strings}) async {
     final selected = await BahrainPlaceSearchSheet.show(
       context,
       language: widget.language,
-      title: isPickup ? strings.text('pickupLocation') : strings.text('destination'),
-      initialQuery: isPickup ? _pickupController.text : _destinationController.text,
+      title: isPickup
+          ? strings.text('pickupLocation')
+          : strings.text('destination'),
+      initialQuery:
+          isPickup ? _pickupController.text : _destinationController.text,
     );
 
     if (selected == null) {
@@ -150,7 +176,90 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
     }
   }
 
-  String get _mapHeadline => _isArabic ? 'تقدير على خريطة البحرين' : 'Bahrain map estimate';
+  Future<void> _useCurrentLocation({
+    required bool isPickup,
+    required AppStrings strings,
+  }) async {
+    if (!_shareLocationEnabled) {
+      final message = _isArabic
+          ? 'قم بتفعيل مشاركة الموقع من الإعدادات أولاً.'
+          : 'Enable "Share location" from Settings first.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+      return;
+    }
+
+    setState(() {
+      _isFetchingCurrentLocation = true;
+    });
+
+    try {
+      final place = await LocationService.getCurrentPlace();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        if (isPickup) {
+          _pickupPlace = place;
+          _pickupController.text = place.label;
+        } else {
+          _destinationPlace = place;
+          _destinationController.text = place.label;
+        }
+      });
+      await _calculateRoute();
+    } on LocationServiceDisabledException {
+      if (!mounted) {
+        return;
+      }
+      final message = _isArabic
+          ? 'فعّل خدمة الموقع في الهاتف أولاً.'
+          : 'Please enable device location services first.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } on LocationPermissionDeniedForeverException {
+      if (!mounted) {
+        return;
+      }
+      final message = _isArabic
+          ? 'صلاحية الموقع مرفوضة نهائياً. افتح إعدادات التطبيق.'
+          : 'Location permission is permanently denied. Open app settings.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } on LocationPermissionDeniedException {
+      if (!mounted) {
+        return;
+      }
+      final message = _isArabic
+          ? 'تم رفض صلاحية الموقع.'
+          : 'Location permission was denied.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      final message = _isArabic
+          ? 'تعذر الحصول على موقعك الحالي الآن.'
+          : 'Could not fetch your current location right now.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isFetchingCurrentLocation = false;
+        });
+      }
+    }
+  }
+
+  String get _mapHeadline =>
+      _isArabic ? 'تقدير على خريطة البحرين' : 'Bahrain map estimate';
   String get _mapSubline {
     if (_routeInfo == null) {
       return _isArabic
@@ -196,14 +305,22 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
                     context,
                     label: strings.text('pickupLocation'),
                     controller: _pickupController,
-                    onTap: () => _pickLocation(isPickup: true, strings: strings),
+                    onTap: () =>
+                        _pickLocation(isPickup: true, strings: strings),
+                    onUseCurrentLocation: () =>
+                        _useCurrentLocation(isPickup: true, strings: strings),
                   ),
                   const SizedBox(height: 12),
                   _locationField(
                     context,
                     label: strings.text('destination'),
                     controller: _destinationController,
-                    onTap: () => _pickLocation(isPickup: false, strings: strings),
+                    onTap: () =>
+                        _pickLocation(isPickup: false, strings: strings),
+                    onUseCurrentLocation: () => _useCurrentLocation(
+                      isPickup: false,
+                      strings: strings,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<EstimateVehicleType>(
@@ -273,11 +390,14 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
                     value: _distanceFare,
                   ),
                   const SizedBox(height: 8),
-                  _estimateRow(
-                    context,
-                    label: strings.text('estimateServiceFee'),
-                    value: _serviceFee,
-                  ),
+                  if (_serviceFee > 0) ...[
+                    const SizedBox(height: 8),
+                    _estimateRow(
+                      context,
+                      label: strings.text('estimateServiceFee'),
+                      value: _serviceFee,
+                    ),
+                  ],
                   if (_surcharge > 0) ...[
                     const SizedBox(height: 8),
                     _estimateRow(
@@ -317,6 +437,7 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
     required String label,
     required TextEditingController controller,
     required VoidCallback onTap,
+    VoidCallback? onUseCurrentLocation,
   }) {
     return TextFormField(
       controller: controller,
@@ -325,9 +446,29 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
       decoration: InputDecoration(
         labelText: label,
         border: const OutlineInputBorder(),
-        suffixIcon: IconButton(
-          onPressed: onTap,
-          icon: const Icon(Icons.map_outlined),
+        suffixIcon: SizedBox(
+          width: 96,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (onUseCurrentLocation != null)
+                IconButton(
+                  onPressed:
+                      _isFetchingCurrentLocation ? null : onUseCurrentLocation,
+                  icon: _isFetchingCurrentLocation
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.my_location_outlined),
+                ),
+              IconButton(
+                onPressed: onTap,
+                icon: const Icon(Icons.map_outlined),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -29,6 +29,8 @@ class BahrainMapService {
       <String, List<PlaceResult>>{};
   static final Map<String, PlaceResult?> _geocodeCache =
       <String, PlaceResult?>{};
+  static final Map<String, PlaceResult?> _reverseGeocodeCache =
+      <String, PlaceResult?>{};
 
   static Future<List<PlaceResult>> searchPlaces(
     String query, {
@@ -45,7 +47,8 @@ class BahrainMapService {
       return cached;
     }
 
-    final uri = Uri.parse('${AppConfig.normalizedGeocodingBaseUrl}/search').replace(
+    final uri =
+        Uri.parse('${AppConfig.normalizedGeocodingBaseUrl}/search').replace(
       queryParameters: <String, String>{
         'q': normalized,
         'countrycodes': 'bh',
@@ -65,7 +68,8 @@ class BahrainMapService {
     );
 
     if (response.statusCode != 200) {
-      throw Exception('Bahrain location search failed (${response.statusCode}).');
+      throw Exception(
+          'Bahrain location search failed (${response.statusCode}).');
     }
 
     final decoded = jsonDecode(response.body) as List<dynamic>;
@@ -101,6 +105,54 @@ class BahrainMapService {
     }
   }
 
+  static Future<PlaceResult?> reverseGeocode({
+    required double latitude,
+    required double longitude,
+  }) async {
+    final cacheKey =
+        '${latitude.toStringAsFixed(5)},${longitude.toStringAsFixed(5)}';
+    if (_reverseGeocodeCache.containsKey(cacheKey)) {
+      return _reverseGeocodeCache[cacheKey];
+    }
+
+    final uri =
+        Uri.parse('${AppConfig.normalizedGeocodingBaseUrl}/reverse').replace(
+      queryParameters: <String, String>{
+        'lat': latitude.toString(),
+        'lon': longitude.toString(),
+        'format': 'jsonv2',
+        'addressdetails': '1',
+      },
+    );
+
+    try {
+      final response = await http.get(
+        uri,
+        headers: const <String, String>{
+          'User-Agent': _userAgent,
+          'Accept': 'application/json',
+          'Accept-Language': 'en,ar',
+        },
+      );
+
+      if (response.statusCode != 200) {
+        _reverseGeocodeCache[cacheKey] = null;
+        return null;
+      }
+
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final place = PlaceResult.fromNominatim(decoded);
+      final normalizedPlace = place.copyWith(
+        title: place.title.trim().isEmpty ? 'Current Location' : place.title,
+      );
+      _reverseGeocodeCache[cacheKey] = normalizedPlace;
+      return normalizedPlace;
+    } catch (_) {
+      _reverseGeocodeCache[cacheKey] = null;
+      return null;
+    }
+  }
+
   static Future<RouteInfo> buildRoute({
     required LatLng start,
     required LatLng end,
@@ -127,9 +179,10 @@ class BahrainMapService {
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-        final routes = (decoded['routes'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .toList(growable: false);
+        final routes =
+            (decoded['routes'] as List<dynamic>? ?? const <dynamic>[])
+                .whereType<Map<String, dynamic>>()
+                .toList(growable: false);
 
         if (routes.isNotEmpty) {
           final firstRoute = routes.first;
@@ -203,8 +256,7 @@ class BahrainMapService {
     const earthRadiusKm = 6371.0;
     final dLat = _degToRad(lat2 - lat1);
     final dLon = _degToRad(lon2 - lon1);
-    final a =
-        _sinSquared(dLat / 2) +
+    final a = _sinSquared(dLat / 2) +
         math.cos(_degToRad(lat1)) *
             math.cos(_degToRad(lat2)) *
             _sinSquared(dLon / 2);

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'models/payment_method_model.dart';
+import 'services/app_preferences_service.dart';
+import 'services/location_service.dart';
 import 'services/pocketbase_service.dart';
 
 const Color kLightningCard = Color(0xFF141B2D);
@@ -32,7 +35,7 @@ class AppStrings {
       'estimateSubtitle': 'Enter trip details to get an instant estimate',
       'estimateDistance': 'Distance',
       'estimateNightService': 'Night service',
-      'estimateNightServiceSub': 'Applies a 20% surcharge for late hours',
+      'estimateNightServiceSub': 'Adds a flat 5 BHD at night',
       'estimateCalculate': 'Calculate Estimate',
       'estimateResultTitle': 'Estimated Cost',
       'estimateBaseFare': 'Base fare',
@@ -40,7 +43,8 @@ class AppStrings {
       'estimateServiceFee': 'Service fee',
       'estimateNightSurcharge': 'Night surcharge',
       'estimateTotal': 'Total estimate',
-      'estimateDisclaimer': 'Final price may vary based on traffic, waiting time, and exact route.',
+      'estimateDisclaimer':
+          'Bahrain map pricing uses a 5 BHD minimum and 20 BHD daytime maximum. Night service adds a flat 5 BHD.',
       'estimateSedan': 'Sedan',
       'estimateSuv': 'SUV',
       'estimateMotorcycle': 'Motorcycle',
@@ -116,64 +120,66 @@ class AppStrings {
       'verifyingOtp': 'Verifying...',
       'otpSentTo': 'OTP sent successfully',
       'otpSendFailed': 'Failed to send OTP',
-      'otpProviderMisconfigured': 'SMS provider is not configured correctly. Please contact support.',
+      'otpProviderMisconfigured':
+          'SMS provider is not configured correctly. Please contact support.',
       'otpVerificationFailed': 'Failed to verify OTP',
-      'pocketbaseSetupMissing': 'PocketBase is not configured. Set the PocketBase URL.',
-        'requestTowService': 'Request Tow Service',
-        'matchSubtitle': "We'll match you with the best driver",
-        'quickRequestAvailable': 'Quick Request Available!',
-        'quickRequestBody':
+      'pocketbaseSetupMissing':
+          'PocketBase is not configured. Set the PocketBase URL.',
+      'requestTowService': 'Request Tow Service',
+      'matchSubtitle': "We'll match you with the best driver",
+      'quickRequestAvailable': 'Quick Request Available!',
+      'quickRequestBody':
           'Ahmed Al-Khalifa is just 1.2 mi away. Select a vehicle type and click "Request This Truck Now" for instant service.',
-        'refreshLocation': 'Refresh Location',
-        'yourLocation': 'Your Location',
-        'closestTruck': 'Closest Truck',
-        'availableTrucks': 'Available Trucks',
-        'closestAvailable': 'Closest Available',
-        'requestThisTruckNow': 'Request This Truck Now',
-        'confirmRequest': 'Confirm Tow Request',
-        'serviceDetails': 'Service Details',
-        'serviceDetailsSub': 'Tell us about your towing needs',
-        'whenNeedService': 'When do you need service?',
-        'immediate': 'Immediate - As soon as possible',
-        'scheduleLater': 'Schedule for later',
-        'pickupLocation': 'Pickup Location *',
-        'destination': 'Destination *',
-        'vehicleType': 'Vehicle/Service Type *',
-        'additionalDetails': 'Additional Details (Optional)',
-        'destinationHint': 'Where should we tow your vehicle?',
-        'vehicleTypeHint': 'Select vehicle type',
-        'additionalDetailsHint': 'Any special instructions or vehicle details...',
-        'aiSmartMatching': 'AI Smart Matching',
-        'aiSmartBody':
+      'refreshLocation': 'Refresh Location',
+      'yourLocation': 'Your Location',
+      'closestTruck': 'Closest Truck',
+      'availableTrucks': 'Available Trucks',
+      'closestAvailable': 'Closest Available',
+      'requestThisTruckNow': 'Request This Truck Now',
+      'confirmRequest': 'Confirm Tow Request',
+      'serviceDetails': 'Service Details',
+      'serviceDetailsSub': 'Tell us about your towing needs',
+      'whenNeedService': 'When do you need service?',
+      'immediate': 'Immediate - As soon as possible',
+      'scheduleLater': 'Schedule for later',
+      'pickupLocation': 'Pickup Location *',
+      'destination': 'Destination *',
+      'vehicleType': 'Vehicle/Service Type *',
+      'additionalDetails': 'Additional Details (Optional)',
+      'destinationHint': 'Where should we tow your vehicle?',
+      'vehicleTypeHint': 'Select vehicle type',
+      'additionalDetailsHint': 'Any special instructions or vehicle details...',
+      'aiSmartMatching': 'AI Smart Matching',
+      'aiSmartBody':
           'Our AI analyzes location, availability, service history, and ratings to match you with the perfect driver.',
-        'whatsIncluded': "What's Included",
-        'fastResponse': 'Fast Response',
-        'fastResponseSub': 'Average arrival in 15 min',
-        'realtimeTracking': 'Real-time Tracking',
-        'realtimeTrackingSub': 'Track your driver live on map',
-        'professionalService': 'Professional Service',
-        'professionalServiceSub': 'Verified & rated drivers',
-        'serviceProgress': 'Service Progress',
-        'serviceProgressRequested': 'Request Received',
-        'serviceProgressAssigned': 'Driver Assigned',
-        'serviceProgressEnRoute': 'Driver En Route',
-        'inProgress': 'In progress',
-        'trackPickup': 'Pickup Location',
-        'trackDestination': 'Destination',
-        'trackYourDriver': 'Your Driver',
-        'trackVehicle': 'Vehicle',
-        'trackLicensePlate': 'License Plate',
-        'trackEstimatedArrival': 'Estimated Arrival',
-        'trackDriverOnTheWay': 'Driver is on the way',
-        'trackServiceCost': 'Service Cost',
-        'trackPaymentNote': 'Payment will be processed after service completion',
-        'trackNeedHelp': 'Need Help?',
-        'trackCallDriver': 'Call Driver',
-        'trackSendMessage': 'Send Message',
-        'pending': 'Pending',
-        'assigned': 'Assigned',
-        'completed': 'Completed',
-        'cancelled': 'Cancelled',
+      'whatsIncluded': "What's Included",
+      'fastResponse': 'Fast Response',
+      'fastResponseSub': 'Average arrival in 15 min',
+      'realtimeTracking': 'Real-time Tracking',
+      'realtimeTrackingSub': 'Track your driver live on map',
+      'professionalService': 'Professional Service',
+      'professionalServiceSub': 'Verified & rated drivers',
+      'serviceProgress': 'Service Progress',
+      'serviceProgressRequested': 'Request Received',
+      'serviceProgressAssigned': 'Driver Assigned',
+      'serviceProgressEnRoute': 'Driver En Route',
+      'inProgress': 'In progress',
+      'trackPickup': 'Pickup Location',
+      'trackDestination': 'Destination',
+      'trackYourDriver': 'Your Driver',
+      'trackVehicle': 'Vehicle',
+      'trackLicensePlate': 'License Plate',
+      'trackEstimatedArrival': 'Estimated Arrival',
+      'trackDriverOnTheWay': 'Driver is on the way',
+      'trackServiceCost': 'Service Cost',
+      'trackPaymentNote': 'Payment will be processed after service completion',
+      'trackNeedHelp': 'Need Help?',
+      'trackCallDriver': 'Call Driver',
+      'trackSendMessage': 'Send Message',
+      'pending': 'Pending',
+      'assigned': 'Assigned',
+      'completed': 'Completed',
+      'cancelled': 'Cancelled',
     },
     AppLanguage.ar: {
       'appName': 'برق',
@@ -192,7 +198,7 @@ class AppStrings {
       'estimateSubtitle': 'أدخل تفاصيل الرحلة للحصول على تقدير فوري',
       'estimateDistance': 'المسافة',
       'estimateNightService': 'خدمة ليلية',
-      'estimateNightServiceSub': 'تُطبق زيادة 20٪ خلال الساعات المتأخرة',
+      'estimateNightServiceSub': 'تضاف 5 د.ب كرسوم ليلية ثابتة',
       'estimateCalculate': 'احسب التقدير',
       'estimateResultTitle': 'التكلفة التقديرية',
       'estimateBaseFare': 'التعرفة الأساسية',
@@ -200,7 +206,8 @@ class AppStrings {
       'estimateServiceFee': 'رسوم الخدمة',
       'estimateNightSurcharge': 'زيادة ليلية',
       'estimateTotal': 'إجمالي التقدير',
-      'estimateDisclaimer': 'قد يختلف السعر النهائي حسب الازدحام ووقت الانتظار والمسار الفعلي.',
+      'estimateDisclaimer':
+          'تسعير خريطة البحرين يعتمد حدًا أدنى 5 د.ب وحدًا أقصى 20 د.ب نهارًا. وتضاف 5 د.ب في الخدمة الليلية.',
       'estimateSedan': 'سيدان',
       'estimateSuv': 'دفع رباعي',
       'estimateMotorcycle': 'دراجة نارية',
@@ -276,64 +283,66 @@ class AppStrings {
       'verifyingOtp': 'جاري التحقق...',
       'otpSentTo': 'تم إرسال رمز التحقق بنجاح',
       'otpSendFailed': 'فشل إرسال رمز التحقق',
-      'otpProviderMisconfigured': 'مزود الرسائل القصيرة غير مهيأ بشكل صحيح. يرجى التواصل مع الدعم.',
+      'otpProviderMisconfigured':
+          'مزود الرسائل القصيرة غير مهيأ بشكل صحيح. يرجى التواصل مع الدعم.',
       'otpVerificationFailed': 'فشل التحقق من الرمز',
-      'pocketbaseSetupMissing': 'PocketBase غير مهيأ. قم بتعيين عنوان PocketBase.',
-        'requestTowService': 'طلب خدمة السحب',
-        'matchSubtitle': 'سنطابقك مع أفضل سائق',
-        'quickRequestAvailable': 'طلب سريع متاح!',
-        'quickRequestBody':
+      'pocketbaseSetupMissing':
+          'PocketBase غير مهيأ. قم بتعيين عنوان PocketBase.',
+      'requestTowService': 'طلب خدمة السحب',
+      'matchSubtitle': 'سنطابقك مع أفضل سائق',
+      'quickRequestAvailable': 'طلب سريع متاح!',
+      'quickRequestBody':
           'أحمد آل خليفة يبعد 1.2 ميل فقط. اختر نوع المركبة واضغط "اطلب هذه الشاحنة الآن" للخدمة الفورية.',
-        'refreshLocation': 'تحديث الموقع',
-        'yourLocation': 'موقعك',
-        'closestTruck': 'أقرب شاحنة',
-        'availableTrucks': 'الشاحنات المتاحة',
-        'closestAvailable': 'الأقرب المتاح',
-        'requestThisTruckNow': 'اطلب هذه الشاحنة الآن',
-        'confirmRequest': 'تأكيد طلب السحب',
-        'serviceDetails': 'تفاصيل الخدمة',
-        'serviceDetailsSub': 'أخبرنا باحتياجات السحب الخاصة بك',
-        'whenNeedService': 'متى تحتاج الخدمة؟',
-        'immediate': 'فوري - بأسرع وقت ممكن',
-        'scheduleLater': 'جدولة لاحقًا',
-        'pickupLocation': 'موقع الالتقاط *',
-        'destination': 'الوجهة *',
-        'vehicleType': 'نوع المركبة/الخدمة *',
-        'additionalDetails': 'تفاصيل إضافية (اختياري)',
-        'destinationHint': 'إلى أين ترغب بسحب مركبتك؟',
-        'vehicleTypeHint': 'اختر نوع المركبة',
-        'additionalDetailsHint': 'أي تعليمات خاصة أو تفاصيل عن المركبة...',
-        'aiSmartMatching': 'مطابقة ذكية بالذكاء الاصطناعي',
-        'aiSmartBody':
+      'refreshLocation': 'تحديث الموقع',
+      'yourLocation': 'موقعك',
+      'closestTruck': 'أقرب شاحنة',
+      'availableTrucks': 'الشاحنات المتاحة',
+      'closestAvailable': 'الأقرب المتاح',
+      'requestThisTruckNow': 'اطلب هذه الشاحنة الآن',
+      'confirmRequest': 'تأكيد طلب السحب',
+      'serviceDetails': 'تفاصيل الخدمة',
+      'serviceDetailsSub': 'أخبرنا باحتياجات السحب الخاصة بك',
+      'whenNeedService': 'متى تحتاج الخدمة؟',
+      'immediate': 'فوري - بأسرع وقت ممكن',
+      'scheduleLater': 'جدولة لاحقًا',
+      'pickupLocation': 'موقع الالتقاط *',
+      'destination': 'الوجهة *',
+      'vehicleType': 'نوع المركبة/الخدمة *',
+      'additionalDetails': 'تفاصيل إضافية (اختياري)',
+      'destinationHint': 'إلى أين ترغب بسحب مركبتك؟',
+      'vehicleTypeHint': 'اختر نوع المركبة',
+      'additionalDetailsHint': 'أي تعليمات خاصة أو تفاصيل عن المركبة...',
+      'aiSmartMatching': 'مطابقة ذكية بالذكاء الاصطناعي',
+      'aiSmartBody':
           'يقوم الذكاء الاصطناعي بتحليل الموقع والتوفر وسجل الخدمة والتقييمات لمطابقتك مع السائق الأنسب.',
-        'whatsIncluded': 'ما الذي يتضمنه',
-        'fastResponse': 'استجابة سريعة',
-        'fastResponseSub': 'متوسط الوصول خلال 15 دقيقة',
-        'realtimeTracking': 'تتبع لحظي',
-        'realtimeTrackingSub': 'تتبع السائق مباشرة على الخريطة',
-        'professionalService': 'خدمة احترافية',
-        'professionalServiceSub': 'سائقون موثقون ومقيّمون',
-        'serviceProgress': 'تقدم الخدمة',
-        'serviceProgressRequested': 'تم استلام الطلب',
-        'serviceProgressAssigned': 'تم تخصيص السائق',
-        'serviceProgressEnRoute': 'السائق في الطريق',
-        'inProgress': 'قيد التنفيذ',
-        'trackPickup': 'موقع الالتقاط',
-        'trackDestination': 'الوجهة',
-        'trackYourDriver': 'سائقك',
-        'trackVehicle': 'المركبة',
-        'trackLicensePlate': 'رقم اللوحة',
-        'trackEstimatedArrival': 'وقت الوصول المتوقع',
-        'trackDriverOnTheWay': 'السائق في الطريق إليك',
-        'trackServiceCost': 'تكلفة الخدمة',
-        'trackPaymentNote': 'سيتم معالجة الدفع بعد إكمال الخدمة',
-        'trackNeedHelp': 'تحتاج مساعدة؟',
-        'trackCallDriver': 'اتصل بالسائق',
-        'trackSendMessage': 'أرسل رسالة',
-        'pending': 'قيد الانتظار',
-        'assigned': 'تم التخصيص',
-        'completed': 'مكتمل',
-        'cancelled': 'ملغي',
+      'whatsIncluded': 'ما الذي يتضمنه',
+      'fastResponse': 'استجابة سريعة',
+      'fastResponseSub': 'متوسط الوصول خلال 15 دقيقة',
+      'realtimeTracking': 'تتبع لحظي',
+      'realtimeTrackingSub': 'تتبع السائق مباشرة على الخريطة',
+      'professionalService': 'خدمة احترافية',
+      'professionalServiceSub': 'سائقون موثقون ومقيّمون',
+      'serviceProgress': 'تقدم الخدمة',
+      'serviceProgressRequested': 'تم استلام الطلب',
+      'serviceProgressAssigned': 'تم تخصيص السائق',
+      'serviceProgressEnRoute': 'السائق في الطريق',
+      'inProgress': 'قيد التنفيذ',
+      'trackPickup': 'موقع الالتقاط',
+      'trackDestination': 'الوجهة',
+      'trackYourDriver': 'سائقك',
+      'trackVehicle': 'المركبة',
+      'trackLicensePlate': 'رقم اللوحة',
+      'trackEstimatedArrival': 'وقت الوصول المتوقع',
+      'trackDriverOnTheWay': 'السائق في الطريق إليك',
+      'trackServiceCost': 'تكلفة الخدمة',
+      'trackPaymentNote': 'سيتم معالجة الدفع بعد إكمال الخدمة',
+      'trackNeedHelp': 'تحتاج مساعدة؟',
+      'trackCallDriver': 'اتصل بالسائق',
+      'trackSendMessage': 'أرسل رسالة',
+      'pending': 'قيد الانتظار',
+      'assigned': 'تم التخصيص',
+      'completed': 'مكتمل',
+      'cancelled': 'ملغي',
     },
   };
 
@@ -400,6 +409,8 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _serviceUpdates = true;
   bool _shareLocation = true;
   bool _showProfile = true;
+  bool _loadingPreferences = true;
+  List<PaymentMethodModel> _paymentMethods = const <PaymentMethodModel>[];
 
   @override
   void initState() {
@@ -407,6 +418,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _language = widget.language;
     _isDark = widget.isDark;
     _loadUserStats();
+    _loadStoredPreferences();
   }
 
   int _totalRides = 0;
@@ -422,6 +434,246 @@ class _SettingsPageState extends State<SettingsPage> {
       });
     } catch (_) {
       // Keep defaults on error
+    }
+  }
+
+  Future<void> _loadStoredPreferences() async {
+    final snapshot = await AppPreferencesService.getPreferenceSnapshot();
+    final paymentMethods = await AppPreferencesService.getPaymentMethods();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _emailNotifications = snapshot.emailNotifications;
+      _smsNotifications = snapshot.smsNotifications;
+      _serviceUpdates = snapshot.serviceUpdates;
+      _shareLocation = snapshot.shareLocation;
+      _showProfile = snapshot.showProfile;
+      _paymentMethods = paymentMethods;
+      _loadingPreferences = false;
+    });
+  }
+
+  Future<void> _setEmailNotifications(bool value) async {
+    setState(() {
+      _emailNotifications = value;
+    });
+    await AppPreferencesService.setEmailNotificationsEnabled(value);
+  }
+
+  Future<void> _setSmsNotifications(bool value) async {
+    setState(() {
+      _smsNotifications = value;
+    });
+    await AppPreferencesService.setSmsNotificationsEnabled(value);
+  }
+
+  Future<void> _setServiceUpdates(bool value) async {
+    setState(() {
+      _serviceUpdates = value;
+    });
+    await AppPreferencesService.setServiceUpdatesEnabled(value);
+  }
+
+  Future<void> _setShareLocation(bool value) async {
+    setState(() {
+      _shareLocation = value;
+    });
+    await AppPreferencesService.setShareLocationEnabled(value);
+  }
+
+  Future<void> _setShowProfile(bool value) async {
+    setState(() {
+      _showProfile = value;
+    });
+    await AppPreferencesService.setShowProfileEnabled(value);
+  }
+
+  Future<void> _savePaymentMethods() async {
+    await AppPreferencesService.savePaymentMethods(_paymentMethods);
+  }
+
+  Future<void> _setDefaultPaymentMethod(String id) async {
+    final updated = _paymentMethods
+        .map((item) => item.copyWith(isDefault: item.id == id))
+        .toList(growable: false);
+    setState(() {
+      _paymentMethods = updated;
+    });
+    await _savePaymentMethods();
+  }
+
+  Future<void> _removePaymentMethod(String id) async {
+    final filtered =
+        _paymentMethods.where((item) => item.id != id).toList(growable: false);
+    if (filtered.isNotEmpty && !filtered.any((item) => item.isDefault)) {
+      filtered[0] = filtered[0].copyWith(isDefault: true);
+    }
+    setState(() {
+      _paymentMethods = filtered;
+    });
+    await _savePaymentMethods();
+  }
+
+  Future<void> _showAddPaymentMethodDialog(AppStrings strings) async {
+    final labelController = TextEditingController();
+    final last4Controller = TextEditingController();
+    final expiryController = TextEditingController();
+
+    String? validationError;
+    final result = await showDialog<PaymentMethodModel>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(strings.text('addPaymentMethod')),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: labelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Card label',
+                        hintText: 'Visa',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: last4Controller,
+                      keyboardType: TextInputType.number,
+                      maxLength: 4,
+                      decoration: const InputDecoration(
+                        labelText: 'Last 4 digits',
+                        hintText: '4242',
+                        counterText: '',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: expiryController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Expiry',
+                        hintText: 'MM/YY',
+                      ),
+                    ),
+                    if (validationError != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        validationError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final label = labelController.text.trim().isEmpty
+                        ? 'Card'
+                        : labelController.text.trim();
+                    final last4 = last4Controller.text.trim();
+                    final expiry = expiryController.text.trim();
+                    if (!RegExp(r'^\d{4}$').hasMatch(last4)) {
+                      setDialogState(() {
+                        validationError =
+                            'Please enter exactly 4 digits for card number.';
+                      });
+                      return;
+                    }
+                    if (!RegExp(r'^\d{2}/\d{2}$').hasMatch(expiry)) {
+                      setDialogState(() {
+                        validationError = 'Use expiry format MM/YY.';
+                      });
+                      return;
+                    }
+
+                    Navigator.of(dialogContext).pop(
+                      PaymentMethodModel(
+                        id: DateTime.now().millisecondsSinceEpoch.toString(),
+                        label: label,
+                        last4: last4,
+                        expiry: expiry,
+                      ),
+                    );
+                  },
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    labelController.dispose();
+    last4Controller.dispose();
+    expiryController.dispose();
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    final hasDefault = _paymentMethods.any((item) => item.isDefault);
+    setState(() {
+      _paymentMethods = <PaymentMethodModel>[
+        ..._paymentMethods,
+        result.copyWith(isDefault: !hasDefault),
+      ];
+    });
+    await _savePaymentMethods();
+  }
+
+  Future<void> _requestLocationAccess() async {
+    try {
+      await LocationService.ensurePermission();
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location permission granted.')),
+      );
+    } on LocationServiceDisabledException {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enable device location services first.')),
+      );
+    } on LocationPermissionDeniedForeverException {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Location permission is permanently denied. Open app settings.'),
+        ),
+      );
+    } on LocationPermissionDeniedException {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location permission denied.')),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not request location permission.')),
+      );
     }
   }
 
@@ -459,15 +711,21 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Color _softSurface(BuildContext context) {
-    return _isDarkMode(context) ? const Color(0xFF1A2336) : const Color(0xFFEFF1F5);
+    return _isDarkMode(context)
+        ? const Color(0xFF1A2336)
+        : const Color(0xFFEFF1F5);
   }
 
   Color _fieldSurface(BuildContext context) {
-    return _isDarkMode(context) ? const Color(0xFF101827) : const Color(0xFFF9FAFB);
+    return _isDarkMode(context)
+        ? const Color(0xFF101827)
+        : const Color(0xFFF9FAFB);
   }
 
   Color _chipSurface(BuildContext context) {
-    return _isDarkMode(context) ? const Color(0xFF202A3F) : const Color(0xFFE5E7EB);
+    return _isDarkMode(context)
+        ? const Color(0xFF202A3F)
+        : const Color(0xFFE5E7EB);
   }
 
   @override
@@ -511,8 +769,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   border: Border.all(color: _borderColor(context)),
                 ),
                 child: TabBar(
-                  labelColor:
-                      _isDarkMode(context) ? Colors.white : const Color(0xFF111827),
+                  labelColor: _isDarkMode(context)
+                      ? Colors.white
+                      : const Color(0xFF111827),
                   unselectedLabelColor: muted,
                   dividerColor: Colors.transparent,
                   indicatorSize: TabBarIndicatorSize.tab,
@@ -791,33 +1050,21 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _emailNotifications,
-              onChanged: (value) {
-                setState(() {
-                  _emailNotifications = value;
-                });
-              },
+              onChanged: (value) => _setEmailNotifications(value),
               secondary: const Icon(Icons.mail_outline),
               title: Text(strings.text('emailNotifications')),
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _smsNotifications,
-              onChanged: (value) {
-                setState(() {
-                  _smsNotifications = value;
-                });
-              },
+              onChanged: (value) => _setSmsNotifications(value),
               secondary: const Icon(Icons.sms_outlined),
               title: Text(strings.text('smsNotifications')),
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _serviceUpdates,
-              onChanged: (value) {
-                setState(() {
-                  _serviceUpdates = value;
-                });
-              },
+              onChanged: (value) => _setServiceUpdates(value),
               secondary: const Icon(Icons.notifications_active_outlined),
               title: Text(strings.text('serviceUpdates')),
             ),
@@ -832,22 +1079,23 @@ class _SettingsPageState extends State<SettingsPage> {
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _shareLocation,
-              onChanged: (value) {
-                setState(() {
-                  _shareLocation = value;
-                });
-              },
+              onChanged: (value) => _setShareLocation(value),
               secondary: const Icon(Icons.location_on_outlined),
               title: Text(strings.text('shareLocation')),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _shareLocation ? _requestLocationAccess : null,
+                icon: const Icon(Icons.gps_fixed),
+                label: const Text('Grant Location Access'),
+              ),
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               value: _showProfile,
-              onChanged: (value) {
-                setState(() {
-                  _showProfile = value;
-                });
-              },
+              onChanged: (value) => _setShowProfile(value),
               secondary: const Icon(Icons.visibility_outlined),
               title: Text(strings.text('showProfile')),
             ),
@@ -862,6 +1110,8 @@ class _SettingsPageState extends State<SettingsPage> {
     AppStrings strings,
     Color? muted,
   ) {
+    final methods = _paymentMethods;
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
       children: [
@@ -871,66 +1121,35 @@ class _SettingsPageState extends State<SettingsPage> {
           leadingIcon: Icons.credit_card,
           subtitle: strings.text('managePaymentOptions'),
           children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: _fieldSurface(context),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: _borderColor(context)),
+            if (_loadingPreferences)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (methods.isEmpty)
+              Text(
+                'No payment methods added yet.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: muted,
+                    ),
+              )
+            else
+              ...methods.map(
+                (method) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _paymentMethodTile(
+                    context,
+                    strings: strings,
+                    method: method,
+                    muted: muted,
+                  ),
+                ),
               ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF2563EB),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Icon(Icons.credit_card, color: Colors.white, size: 18),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '•••• •••• •••• 4242',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Expires 12/26',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: muted,
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: _softSurface(context),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Text(
-                      strings.text('defaultLabel'),
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: () {},
+                onPressed: () => _showAddPaymentMethodDialog(strings),
                 icon: const Icon(Icons.add),
                 label: Text(strings.text('addPaymentMethod')),
               ),
@@ -938,6 +1157,94 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         ),
       ],
+    );
+  }
+
+  Widget _paymentMethodTile(
+    BuildContext context, {
+    required AppStrings strings,
+    required PaymentMethodModel method,
+    Color? muted,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _fieldSurface(context),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _borderColor(context)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 28,
+            decoration: BoxDecoration(
+              color: const Color(0xFF2563EB),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Icon(Icons.credit_card, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${method.label} ${method.maskedNumber}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Expires ${method.expiry}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: muted,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          if (method.isDefault)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: _softSurface(context),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                strings.text('defaultLabel'),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            )
+          else
+            TextButton(
+              onPressed: () => _setDefaultPaymentMethod(method.id),
+              child: Text(strings.text('defaultLabel')),
+            ),
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'default') {
+                _setDefaultPaymentMethod(method.id);
+              } else if (value == 'remove') {
+                _removePaymentMethod(method.id);
+              }
+            },
+            itemBuilder: (context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                value: 'default',
+                child: Text('Make default'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'remove',
+                child: Text('Remove'),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

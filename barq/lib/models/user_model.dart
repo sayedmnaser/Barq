@@ -10,6 +10,7 @@ class User {
     required this.name,
     this.avatar,
     required this.phoneNumber,
+    required this.role,
     required this.created,
     required this.updated,
   });
@@ -21,6 +22,7 @@ class User {
   final String name;
   final String? avatar;
   final int phoneNumber;
+  final String role;
   final DateTime created;
   final DateTime updated;
 
@@ -36,12 +38,61 @@ class User {
           ? record.getStringValue('avatar')
           : null,
       phoneNumber: record.getIntValue('phoneNumber'),
-      created: DateTime.tryParse(record.getStringValue('created')) ??
-          DateTime.now(),
-      updated: DateTime.tryParse(record.getStringValue('updated')) ??
-          DateTime.now(),
+      role: resolveRoleFromRecord(record),
+      created:
+          DateTime.tryParse(record.getStringValue('created')) ?? DateTime.now(),
+      updated:
+          DateTime.tryParse(record.getStringValue('updated')) ?? DateTime.now(),
     );
   }
+
+  static String resolveRoleFromRecord(RecordModel record) {
+    const booleanDriverCandidates = <String>[
+      'driver',
+      'Driver',
+      'is_driver',
+      'isDriver',
+    ];
+
+    // If any boolean driver flag is true, treat the account as driver.
+    for (final field in booleanDriverCandidates) {
+      if (record.getBoolValue(field)) {
+        return 'driver';
+      }
+    }
+
+    final roleCandidates = <String>[
+      record.getStringValue('role'),
+      record.getStringValue('account_type'),
+      record.getStringValue('accountType'),
+      record.getStringValue('user_type'),
+      record.getStringValue('userType'),
+      record.getStringValue('type'),
+    ];
+
+    for (final candidate in roleCandidates) {
+      if (candidate.trim().isNotEmpty) {
+        return normalizeRole(candidate);
+      }
+    }
+
+    return 'customer';
+  }
+
+  static String normalizeRole(String? value) {
+    final normalized = (value ?? '').trim().toLowerCase();
+    if (normalized == 'driver' || normalized == 'tow_driver') {
+      return 'driver';
+    }
+    if (normalized.isEmpty ||
+        normalized == 'customer' ||
+        normalized == 'user') {
+      return 'customer';
+    }
+    return normalized;
+  }
+
+  bool get isDriver => role == 'driver';
 
   /// Returns the first name (first word of [name]).
   String get firstName {

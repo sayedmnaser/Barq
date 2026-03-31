@@ -5,6 +5,7 @@
 ///
 /// Example:
 ///   dart run tool/setup_pocketbase.dart admin@example.com mysecretpassword
+library;
 
 import 'dart:convert';
 import 'dart:io';

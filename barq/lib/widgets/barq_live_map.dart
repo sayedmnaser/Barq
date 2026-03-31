@@ -13,6 +13,7 @@ class BarqLiveMap extends StatelessWidget {
     this.pickup,
     this.destination,
     this.driver,
+    this.nearbyDrivers = const <PlaceResult>[],
     this.routePoints = const <LatLng>[],
     this.headline,
     this.subline,
@@ -22,6 +23,7 @@ class BarqLiveMap extends StatelessWidget {
   final PlaceResult? pickup;
   final PlaceResult? destination;
   final PlaceResult? driver;
+  final List<PlaceResult> nearbyDrivers;
   final List<LatLng> routePoints;
   final String? headline;
   final String? subline;
@@ -33,6 +35,7 @@ class BarqLiveMap extends StatelessWidget {
       ...routePoints,
       if (pickup != null) pickup!.latLng,
       if (destination != null) destination!.latLng,
+      ...nearbyDrivers.map((item) => item.latLng),
       if (driver != null) driver!.latLng,
     ];
 
@@ -40,15 +43,17 @@ class BarqLiveMap extends StatelessWidget {
     for (final point in coordinates) {
       final exists = uniqueCoordinates.any(
         (item) =>
-            item.latitude == point.latitude && item.longitude == point.longitude,
+            item.latitude == point.latitude &&
+            item.longitude == point.longitude,
       );
       if (!exists) {
         uniqueCoordinates.add(point);
       }
     }
 
-    final initialCenter =
-        uniqueCoordinates.isNotEmpty ? uniqueCoordinates.first : BahrainMapService.bahrainCenter;
+    final initialCenter = uniqueCoordinates.isNotEmpty
+        ? uniqueCoordinates.first
+        : BahrainMapService.bahrainCenter;
 
     final initialFit = uniqueCoordinates.length > 1
         ? CameraFit.coordinates(
@@ -57,6 +62,11 @@ class BarqLiveMap extends StatelessWidget {
             maxZoom: 15,
           )
         : null;
+    final cameraSignature = [
+      for (final point in uniqueCoordinates)
+        '${point.latitude.toStringAsFixed(5)},${point.longitude.toStringAsFixed(5)}',
+      'route:${routePoints.length}',
+    ].join('|');
 
     final markers = <Marker>[
       if (pickup != null)
@@ -93,6 +103,26 @@ class BarqLiveMap extends StatelessWidget {
             compact: true,
           ),
         ),
+      ...nearbyDrivers
+          .where(
+            (item) =>
+                driver == null ||
+                item.latitude != driver!.latitude ||
+                item.longitude != driver!.longitude,
+          )
+          .map(
+            (item) => Marker(
+              point: item.latLng,
+              width: 50,
+              height: 50,
+              alignment: Alignment.center,
+              child: const _MapMarker(
+                icon: Icons.local_shipping_outlined,
+                color: Color(0xFF2563EB),
+                compact: true,
+              ),
+            ),
+          ),
     ];
 
     return Container(
@@ -107,6 +137,7 @@ class BarqLiveMap extends StatelessWidget {
       child: Stack(
         children: [
           FlutterMap(
+            key: ValueKey<String>(cameraSignature),
             options: MapOptions(
               initialCenter: initialCenter,
               initialZoom: uniqueCoordinates.length > 1 ? 12.0 : 13.4,
@@ -144,7 +175,8 @@ class BarqLiveMap extends StatelessWidget {
               left: 12,
               right: 12,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: isDark
                       ? Colors.black.withValues(alpha: 0.60)
@@ -159,7 +191,9 @@ class BarqLiveMap extends StatelessWidget {
                         headline!,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w700,
-                              color: isDark ? Colors.white : const Color(0xFF111827),
+                              color: isDark
+                                  ? Colors.white
+                                  : const Color(0xFF111827),
                             ),
                       ),
                     if ((subline ?? '').isNotEmpty) ...[
@@ -187,7 +221,7 @@ class BarqLiveMap extends StatelessWidget {
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Text(
-                '© OpenStreetMap contributors',
+                '(c) OpenStreetMap contributors',
                 style: TextStyle(
                   fontSize: 10,
                   color: Color(0xFF111827),

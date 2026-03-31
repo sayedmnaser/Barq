@@ -5,6 +5,7 @@ import 'package:pocketbase/pocketbase.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/tow_request_model.dart';
+import '../models/user_model.dart';
 import 'app_config.dart';
 
 class PocketBaseService {
@@ -13,6 +14,7 @@ class PocketBaseService {
   static const String configuredUrl = AppConfig.pocketBaseUrl;
   static const int sessionDays = 15;
   static const String _loginTimestampKey = 'pb_login_timestamp';
+  static const String _driverProfilesCollection = 'driver_profiles';
 
   static PocketBaseService? _instance;
 
@@ -63,6 +65,29 @@ class PocketBaseService {
   RecordModel? get currentUserRecord => _client.authStore.record;
 
   String? get _userId => currentUserRecord?.id;
+  String get currentUserName {
+    final name = currentUserRecord?.getStringValue('name').trim() ?? '';
+    if (name.isNotEmpty) {
+      return name;
+    }
+
+    final email = currentUserRecord?.getStringValue('email').trim() ?? '';
+    if (email.isNotEmpty) {
+      return email.split('@').first;
+    }
+
+    return 'Driver';
+  }
+
+  String get currentUserRole {
+    final record = currentUserRecord;
+    if (record == null) {
+      return 'customer';
+    }
+    return User.resolveRoleFromRecord(record);
+  }
+
+  bool get isCurrentUserDriver => currentUserRole == 'driver';
 
   Future<bool> ping() async {
     try {
@@ -89,10 +114,197 @@ class PocketBaseService {
     await prefs.remove(_loginTimestampKey);
   }
 
+  Future<RecordModel?> refreshCurrentUserRecord() async {
+    final userId = _userId;
+    if (userId == null) {
+      return null;
+    }
+
+    final record = await _client.collection('users').getOne(userId);
+    _client.authStore.save(_client.authStore.token, record);
+    return record;
+  }
+
+  Future<RecordModel> updateCurrentUserRole(String role) async {
+    final userId = _userId;
+    if (userId == null) {
+      throw Exception('User not authenticated');
+    }
+
+    final normalizedRole = User.normalizeRole(role);
+    final isDriverRole = normalizedRole == 'driver';
+    const roleFieldCandidates = <String>[
+      'role',
+      'account_type',
+      'accountType',
+      'user_type',
+      'userType',
+      'type',
+    ];
+    const booleanRoleFieldCandidates = <String>[
+      'driver',
+      'Driver',
+      'is_driver',
+      'isDriver',
+    ];
+
+    ClientException? lastException;
+    for (final fieldName in roleFieldCandidates) {
+      try {
+        final updated = await _client.collection('users').update(
+          userId,
+          body: <String, dynamic>{fieldName: normalizedRole},
+        );
+        _client.authStore.save(_client.authStore.token, updated);
+        return updated;
+      } on ClientException catch (e) {
+        lastException = e;
+        if (_isMissingFieldError(e, fieldName)) {
+          continue;
+        }
+        rethrow;
+      }
+    }
+
+    for (final fieldName in booleanRoleFieldCandidates) {
+      try {
+        final updated = await _client.collection('users').update(
+          userId,
+          body: <String, dynamic>{fieldName: isDriverRole},
+        );
+        _client.authStore.save(_client.authStore.token, updated);
+        return updated;
+      } on ClientException catch (e) {
+        lastException = e;
+        if (_isMissingFieldError(e, fieldName)) {
+          continue;
+        }
+        rethrow;
+      }
+    }
+
+    if (lastException != null) {
+      throw lastException;
+    }
+
+    throw Exception(
+      'No role field exists in users collection. Add one of: role/account_type or driver/Driver.',
+    );
+  }
+
+  Future<RecordModel?> getCurrentDriverProfile() async {
+    final userId = _userId;
+    if (userId == null) {
+      return null;
+    }
+
+    try {
+      final result =
+          await _client.collection(_driverProfilesCollection).getList(
+                page: 1,
+                perPage: 1,
+                filter: 'user = "$userId"',
+                sort: '-updated',
+              );
+      if (result.items.isEmpty) {
+        return null;
+      }
+      return result.items.first;
+    } on ClientException catch (e) {
+      if (_isMissingCollectionError(e)) {
+        throw Exception(_driverProfilesSetupMessage);
+      }
+      rethrow;
+    }
+  }
+
+  Future<RecordModel> upsertCurrentDriverProfile({
+    required String driverName,
+    String? licensePlate,
+    double? driverRating,
+    int? driverTotalRides,
+    int? defaultEtaMinutes,
+    double? defaultDistanceKm,
+    double? driverLat,
+    double? driverLng,
+    bool? isAvailable,
+  }) async {
+    final userId = _userId;
+    if (userId == null) {
+      throw Exception('User not authenticated');
+    }
+
+    final normalizedDriverName = driverName.trim();
+    if (normalizedDriverName.isEmpty) {
+      throw Exception('Driver name is required');
+    }
+
+    final existing = await getCurrentDriverProfile();
+    final body = <String, dynamic>{
+      'user': userId,
+      'driver_name': normalizedDriverName,
+      if (licensePlate != null && licensePlate.trim().isNotEmpty)
+        'license_plate': licensePlate.trim(),
+      if (driverRating != null) 'driver_rating': driverRating,
+      if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
+      if (defaultEtaMinutes != null) 'default_eta_minutes': defaultEtaMinutes,
+      if (defaultDistanceKm != null) 'default_distance_km': defaultDistanceKm,
+      if (driverLat != null) 'driver_lat': driverLat,
+      if (driverLng != null) 'driver_lng': driverLng,
+      if (isAvailable != null) 'is_available': isAvailable,
+    };
+
+    try {
+      if (existing == null) {
+        return await _client.collection(_driverProfilesCollection).create(
+              body: body,
+            );
+      }
+      return await _client.collection(_driverProfilesCollection).update(
+            existing.id,
+            body: body,
+          );
+    } on ClientException catch (e) {
+      if (_isMissingCollectionError(e)) {
+        throw Exception(_driverProfilesSetupMessage);
+      }
+      rethrow;
+    }
+  }
+
+  Future<RecordModel> ensureCurrentDriverProfile() async {
+    final existing = await getCurrentDriverProfile();
+    if (existing != null) {
+      return existing;
+    }
+
+    return upsertCurrentDriverProfile(
+      driverName: currentUserName,
+    );
+  }
+
+  Future<List<RecordModel>> getDriverProfiles({int limit = 200}) async {
+    try {
+      final result =
+          await _client.collection(_driverProfilesCollection).getList(
+                page: 1,
+                perPage: limit,
+                sort: '-updated',
+              );
+      return result.items;
+    } on ClientException catch (e) {
+      if (_isMissingCollectionError(e)) {
+        return const <RecordModel>[];
+      }
+      rethrow;
+    }
+  }
+
   /// Request an OTP code. [identity] can be an email or a phone number.
   /// For phone numbers, PocketBase must have an SMS provider hook configured.
   Future<String> requestOtp(String identity) async {
-    final result = await _client.collection('users').requestOTP(identity.trim());
+    final result =
+        await _client.collection('users').requestOTP(identity.trim());
     return result.otpId;
   }
 
@@ -177,7 +389,8 @@ class PocketBaseService {
         try {
           await _client.collection('users').create(body: createBody);
         } on ClientException catch (e2) {
-          if (createBody.containsKey('phoneNumber') && _isPhoneFieldRejected(e2)) {
+          if (createBody.containsKey('phoneNumber') &&
+              _isPhoneFieldRejected(e2)) {
             createBody.remove('phoneNumber');
             await _client.collection('users').create(body: createBody);
           } else {
@@ -231,16 +444,61 @@ class PocketBaseService {
     return message.contains('username');
   }
 
+  bool _isMissingFieldError(ClientException e, String fieldName) {
+    final response = e.response;
+    final message = (response['message'] as String?)?.toLowerCase() ?? '';
+    if (message.contains('failed to find field') ||
+        message.contains('unknown field') ||
+        message.contains('field not found')) {
+      return true;
+    }
+
+    final data = response['data'];
+    if (data is! Map || !data.containsKey(fieldName)) {
+      return false;
+    }
+
+    final fieldError = data[fieldName];
+    if (fieldError is! Map) {
+      return false;
+    }
+
+    final fieldMessage =
+        (fieldError['message'] as String?)?.toLowerCase() ?? '';
+    return fieldMessage.contains('failed to find field') ||
+        fieldMessage.contains('unknown field') ||
+        fieldMessage.contains('field not found');
+  }
+
+  bool _isMissingCollectionError(ClientException e) {
+    final response = e.response;
+    final message = (response['message'] as String?)?.toLowerCase() ?? '';
+    return message.contains('missing or invalid collection') ||
+        message.contains('missing collection') ||
+        message.contains('failed to find collection') ||
+        message.contains(_driverProfilesCollection);
+  }
+
+  String get _driverProfilesSetupMessage =>
+      'Missing "$_driverProfilesCollection" collection. Create it with a relation field "user" -> users and text field "driver_name".';
+
   Future<TowRequest> createTowRequest({
     required String pickupLocation,
     required String destination,
     required String vehicleType,
     String details = '',
     required String serviceTiming,
+    String status = 'pending',
     double? pickupLat,
     double? pickupLng,
     double? destinationLat,
     double? destinationLng,
+    double? driverLat,
+    double? driverLng,
+    String? driverName,
+    double? driverRating,
+    int? driverTotalRides,
+    String? licensePlate,
     double? distanceKm,
     int? etaMinutes,
     double? baseFare,
@@ -258,7 +516,7 @@ class PocketBaseService {
       'vehicle_type': vehicleType,
       'details': details,
       'service_timing': serviceTiming,
-      'status': 'pending',
+      'status': status.trim().isEmpty ? 'pending' : status.trim(),
     };
 
     final enhancedPayload = <String, dynamic>{
@@ -267,6 +525,14 @@ class PocketBaseService {
       if (pickupLng != null) 'pickup_lng': pickupLng,
       if (destinationLat != null) 'destination_lat': destinationLat,
       if (destinationLng != null) 'destination_lng': destinationLng,
+      if (driverLat != null) 'driver_lat': driverLat,
+      if (driverLng != null) 'driver_lng': driverLng,
+      if (driverName != null && driverName.trim().isNotEmpty)
+        'driver_name': driverName.trim(),
+      if (driverRating != null) 'driver_rating': driverRating,
+      if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
+      if (licensePlate != null && licensePlate.trim().isNotEmpty)
+        'license_plate': licensePlate.trim(),
       if (distanceKm != null) 'distance_km': distanceKm,
       if (etaMinutes != null) 'eta_minutes': etaMinutes,
       if (baseFare != null) 'base_fare': baseFare,
@@ -275,7 +541,9 @@ class PocketBaseService {
 
     RecordModel record;
     try {
-      record = await _client.collection('tow_requests').create(body: enhancedPayload);
+      record = await _client
+          .collection('tow_requests')
+          .create(body: enhancedPayload);
     } on ClientException catch (e) {
       if (_hasRejectedOptionalField(
         e,
@@ -284,13 +552,21 @@ class PocketBaseService {
           'pickup_lng',
           'destination_lat',
           'destination_lng',
+          'driver_lat',
+          'driver_lng',
+          'driver_name',
+          'driver_rating',
+          'driver_total_rides',
+          'license_plate',
           'distance_km',
           'eta_minutes',
           'base_fare',
           'distance_fare',
         ],
       )) {
-        record = await _client.collection('tow_requests').create(body: requiredPayload);
+        record = await _client
+            .collection('tow_requests')
+            .create(body: requiredPayload);
       } else {
         rethrow;
       }
@@ -321,12 +597,12 @@ class PocketBaseService {
     }
 
     final result = await _client.collection('tow_requests').getList(
-      page: 1,
-      perPage: 200,
-      filter:
-          'user = "$userId" && (status = "pending" || status = "assigned" || status = "en_route")',
-      sort: '-created',
-    );
+          page: 1,
+          perPage: 200,
+          filter:
+              'user = "$userId" && (status = "pending" || status = "assigned" || status = "en_route")',
+          sort: '-created',
+        );
 
     return result.items.map(TowRequest.fromRecord).toList(growable: false);
   }
@@ -338,14 +614,97 @@ class PocketBaseService {
     }
 
     final result = await _client.collection('tow_requests').getList(
-      page: 1,
-      perPage: 200,
-      filter:
-          'user = "$userId" && (status = "completed" || status = "cancelled")',
-      sort: '-created',
-    );
+          page: 1,
+          perPage: 200,
+          filter:
+              'user = "$userId" && (status = "completed" || status = "cancelled")',
+          sort: '-created',
+        );
 
     return result.items.map(TowRequest.fromRecord).toList(growable: false);
+  }
+
+  Future<List<TowRequest>> getPendingTowRequests() async {
+    if (!isCurrentUserDriver) {
+      throw Exception('Driver role is required.');
+    }
+
+    final result = await _client.collection('tow_requests').getList(
+          page: 1,
+          perPage: 200,
+          filter: 'status = "pending"',
+          sort: 'created',
+        );
+
+    return result.items.map(TowRequest.fromRecord).toList(growable: false);
+  }
+
+  Future<List<TowRequest>> getDriverActiveRequests(String driverName) async {
+    if (!isCurrentUserDriver) {
+      throw Exception('Driver role is required.');
+    }
+
+    final normalizedDriver = driverName.trim();
+    if (normalizedDriver.isEmpty) {
+      return const <TowRequest>[];
+    }
+
+    final escapedDriver = _escapeFilterValue(normalizedDriver);
+    final result = await _client.collection('tow_requests').getList(
+          page: 1,
+          perPage: 200,
+          filter:
+              'driver_name = "$escapedDriver" && (status = "assigned" || status = "en_route")',
+          sort: '-updated',
+        );
+
+    return result.items.map(TowRequest.fromRecord).toList(growable: false);
+  }
+
+  Future<TowRequest> updateTowRequestAsDriver({
+    required String requestId,
+    String? status,
+    String? driverName,
+    String? licensePlate,
+    double? driverRating,
+    int? driverTotalRides,
+    double? distanceKm,
+    int? etaMinutes,
+    double? baseFare,
+    double? distanceFare,
+  }) async {
+    if (!isCurrentUserDriver) {
+      throw Exception('Driver role is required.');
+    }
+
+    final body = <String, dynamic>{
+      if (status != null && status.trim().isNotEmpty) 'status': status.trim(),
+      if (driverName != null && driverName.trim().isNotEmpty)
+        'driver_name': driverName.trim(),
+      if (licensePlate != null && licensePlate.trim().isNotEmpty)
+        'license_plate': licensePlate.trim(),
+      if (driverRating != null) 'driver_rating': driverRating,
+      if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
+      if (distanceKm != null) 'distance_km': distanceKm,
+      if (etaMinutes != null) 'eta_minutes': etaMinutes,
+      if (baseFare != null) 'base_fare': baseFare,
+      if (distanceFare != null) 'distance_fare': distanceFare,
+    };
+
+    if (body.isEmpty) {
+      final record = await _client.collection('tow_requests').getOne(requestId);
+      return TowRequest.fromRecord(record);
+    }
+
+    final record = await _client.collection('tow_requests').update(
+          requestId,
+          body: body,
+        );
+    return TowRequest.fromRecord(record);
+  }
+
+  String _escapeFilterValue(String value) {
+    return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
   }
 
   Future<TowRequest> getTowRequest(String id) async {
@@ -366,14 +725,16 @@ class PocketBaseService {
     }
 
     final result = await _client.collection('tow_requests').getList(
-      page: 1,
-      perPage: 200,
-      filter: 'user = "$userId" && status = "completed"',
-      sort: '-created',
-    );
+          page: 1,
+          perPage: 200,
+          filter: 'user = "$userId" && status = "completed"',
+          sort: '-created',
+        );
 
-    final requests = result.items.map(TowRequest.fromRecord).toList(growable: false);
-    final totalSpent = requests.fold<double>(0, (sum, item) => sum + item.totalFare);
+    final requests =
+        result.items.map(TowRequest.fromRecord).toList(growable: false);
+    final totalSpent =
+        requests.fold<double>(0, (sum, item) => sum + item.totalFare);
 
     return (totalRides: requests.length, totalSpent: totalSpent);
   }

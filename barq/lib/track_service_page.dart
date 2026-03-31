@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'models/place_result.dart';
@@ -29,7 +31,7 @@ class TrackServicePage extends StatefulWidget {
     this.destinationLng,
     this.driverLat,
     this.driverLng,
-    this.language,
+    required this.language,
   });
 
   final String? requestId;
@@ -51,7 +53,7 @@ class TrackServicePage extends StatefulWidget {
   final double? destinationLng;
   final double? driverLat;
   final double? driverLng;
-  final AppLanguage? language;
+  final AppLanguage language;
 
   @override
   State<TrackServicePage> createState() => _TrackServicePageState();
@@ -81,19 +83,19 @@ class _TrackServicePageState extends State<TrackServicePage> {
 
   String _status = 'pending';
   bool _loadingMap = true;
+  bool _loadingRequest = false;
   bool _realtimeReady = false;
+  String? _requestNotice;
   String? _mapNotice;
+  int _mapHydrationToken = 0;
+  Timer? _pollTimer;
 
   PlaceResult? _pickupPlace;
   PlaceResult? _destinationPlace;
   PlaceResult? _driverPlace;
   RouteInfo? _routeInfo;
 
-  AppLanguage get _language =>
-      widget.language ??
-      (Directionality.of(context) == TextDirection.rtl
-          ? AppLanguage.ar
-          : AppLanguage.en);
+  AppLanguage get _language => widget.language;
 
   bool get _isArabic => _language == AppLanguage.ar;
 
@@ -139,28 +141,55 @@ class _TrackServicePageState extends State<TrackServicePage> {
 
     _hydrateMap();
     if (widget.requestId != null) {
-      _loadLatestRequest();
+      _loadLatestRequest(showLoader: true);
       _subscribeToUpdates();
+      _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+        _loadLatestRequest(silent: true);
+      });
     }
   }
 
   @override
   void dispose() {
+    _pollTimer?.cancel();
     if (widget.requestId != null) {
       _pocketBaseService.unsubscribeTowRequest(widget.requestId!);
     }
     super.dispose();
   }
 
-  Future<void> _loadLatestRequest() async {
+  Future<void> _loadLatestRequest({
+    bool showLoader = false,
+    bool silent = false,
+  }) async {
+    if (showLoader && !silent && mounted) {
+      setState(() {
+        _loadingRequest = true;
+      });
+    }
     try {
       final latest = await _pocketBaseService.getTowRequest(widget.requestId!);
       if (!mounted) {
         return;
       }
+      setState(() {
+        _requestNotice = null;
+      });
       _applyTowRequestUpdate(latest, refreshMap: true);
     } catch (_) {
-      // Keep the optimistic state from the request page.
+      if (!mounted || silent) {
+        return;
+      }
+      setState(() {
+        _requestNotice =
+            'Could not load latest request data. Pull down to retry.';
+      });
+    } finally {
+      if (mounted && showLoader && !silent) {
+        setState(() {
+          _loadingRequest = false;
+        });
+      }
     }
   }
 
@@ -178,12 +207,15 @@ class _TrackServicePageState extends State<TrackServicePage> {
       if (mounted) {
         setState(() {
           _realtimeReady = true;
+          _requestNotice = null;
         });
       }
     } catch (_) {
       if (mounted) {
         setState(() {
           _realtimeReady = false;
+          _requestNotice =
+              'Realtime connection is unavailable. Showing latest synced data.';
         });
       }
     }
@@ -233,6 +265,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
       return;
     }
 
+    final token = ++_mapHydrationToken;
     setState(() {
       _loadingMap = true;
       _mapNotice = null;
@@ -271,7 +304,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
       );
     }
 
-    if (!mounted) {
+    if (!mounted || token != _mapHydrationToken) {
       return;
     }
 
@@ -281,7 +314,12 @@ class _TrackServicePageState extends State<TrackServicePage> {
       _driverPlace = driver;
       _routeInfo = route;
       _loadingMap = false;
-      _mapNotice = _buildMapNotice(route: route, driver: driver);
+      _mapNotice = _buildMapNotice(
+        pickup: pickup,
+        destination: destination,
+        route: route,
+        driver: driver,
+      );
     });
   }
 
@@ -338,10 +376,12 @@ class _TrackServicePageState extends State<TrackServicePage> {
   }
 
   String? _buildMapNotice({
+    required PlaceResult? pickup,
+    required PlaceResult? destination,
     required RouteInfo? route,
     required PlaceResult? driver,
   }) {
-    if ((_pickupPlace == null || _destinationPlace == null) && route == null) {
+    if ((pickup == null || destination == null) && route == null) {
       return _isArabic
           ? 'تعذر تحديد مواقع الطلب بدقة على خريطة البحرين.'
           : 'The pickup or destination could not be resolved on the Bahrain map.';
@@ -469,7 +509,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
 
   Future<void> _refreshPage() async {
     if (widget.requestId != null) {
-      await _loadLatestRequest();
+      await _loadLatestRequest(showLoader: true);
     } else {
       await _hydrateMap();
     }
@@ -502,7 +542,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
         actions: [
           IconButton(
             tooltip: _refreshLabel,
-            onPressed: _refreshPage,
+            onPressed: _loadingRequest ? null : _refreshPage,
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -512,6 +552,15 @@ class _TrackServicePageState extends State<TrackServicePage> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
           children: [
+            if (_loadingRequest)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 10),
+                child: LinearProgressIndicator(minHeight: 3),
+              ),
+            if (_requestNotice != null) ...[
+              _noticeCard(context, _requestNotice!),
+              const SizedBox(height: 12),
+            ],
             BarqLiveMap(
               height: 300,
               pickup: _pickupPlace,
@@ -741,7 +790,9 @@ class _TrackServicePageState extends State<TrackServicePage> {
                     context,
                     icon: Icons.badge_outlined,
                     title: strings.text('trackLicensePlate'),
-                    value: _licensePlate.trim().isEmpty ? 'Pending' : _licensePlate,
+                    value: _licensePlate.trim().isEmpty
+                        ? 'Pending'
+                        : _licensePlate,
                   ),
                 ],
               ),
@@ -770,7 +821,8 @@ class _TrackServicePageState extends State<TrackServicePage> {
                   const SizedBox(height: 10),
                   _priceRow(
                     context,
-                    label: _isArabic ? 'المسافة المتبقية' : 'Remaining distance',
+                    label:
+                        _isArabic ? 'المسافة المتبقية' : 'Remaining distance',
                     valueText: _isArabic
                         ? '${_remainingDistanceKm.toStringAsFixed(1)} كم'
                         : '${_remainingDistanceKm.toStringAsFixed(1)} km',

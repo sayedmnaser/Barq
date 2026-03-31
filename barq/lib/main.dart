@@ -4,14 +4,18 @@ import 'package:flutter/material.dart';
 import 'package:pocketbase/pocketbase.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'driver_page.dart';
 import 'get_estimate_page.dart';
 import 'models/tow_request_model.dart';
 import 'models/user_model.dart';
 import 'request_tow_page.dart';
+import 'services/app_preferences_service.dart';
+import 'services/location_service.dart';
 import 'services/pocketbase_service.dart';
 import 'settings.dart';
 import 'sign_in_page.dart';
 import 'sign_up_page.dart';
+import 'support_chat_page.dart';
 import 'track_service_page.dart';
 
 const Color kLightningYellow = Color(0xFFF4C21E);
@@ -61,9 +65,11 @@ class _MyAppState extends State<MyApp> {
     super.initState();
     _loadPreferences();
     _isAuthenticated = _pocketBaseService.isAuthenticated;
-    _currentUserProfile = _buildUserProfile(_pocketBaseService.currentUserRecord);
+    _currentUserProfile =
+        _buildUserProfile(_pocketBaseService.currentUserRecord);
 
-    _authSubscription = _pocketBaseService.client.authStore.onChange.listen((_) {
+    _authSubscription =
+        _pocketBaseService.client.authStore.onChange.listen((_) {
       if (!mounted) {
         return;
       }
@@ -168,7 +174,7 @@ class _MyAppState extends State<MyApp> {
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email.isNotEmpty ? user.email : 'unknown@example.com',
-      role: 'Customer',
+      role: _roleLabel(user.role),
       totalRides: 0,
       totalSpent: '0.000',
       memberSince: memberSince,
@@ -194,6 +200,35 @@ class _MyAppState extends State<MyApp> {
         totalSpent: '0.000',
         memberSince: 'Now',
       );
+    });
+  }
+
+  bool _isDriverRole(String role) {
+    return User.normalizeRole(role) == 'driver';
+  }
+
+  String _roleLabel(String role) {
+    final normalized = User.normalizeRole(role);
+    if (normalized == 'driver') {
+      return 'Driver';
+    }
+    return 'Customer';
+  }
+
+  Future<void> _switchToDriverRole() async {
+    await _pocketBaseService.updateCurrentUserRole('driver');
+    try {
+      await _pocketBaseService.ensureCurrentDriverProfile();
+    } catch (_) {
+      // Role switch remains successful even if driver profile setup is missing.
+    }
+    final refreshed = await _pocketBaseService.refreshCurrentUserRecord();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _currentUserProfile =
+          _buildUserProfile(refreshed ?? _pocketBaseService.currentUserRecord);
     });
   }
 
@@ -228,15 +263,18 @@ class _MyAppState extends State<MyApp> {
         );
       },
       home: _isAuthenticated
-          ? HomePage(
-              user: _currentUserProfile,
-              language: _language,
-              databaseReachable: _databaseReachable,
-              onToggleLanguage: _toggleLanguage,
-              onToggleTheme: _toggleTheme,
-              onRefreshDatabaseStatus: _refreshDatabaseStatus,
-              onLogout: _logout,
-            )
+          ? (_isDriverRole(_currentUserProfile.role)
+              ? DriverPage(language: _language)
+              : HomePage(
+                  user: _currentUserProfile,
+                  language: _language,
+                  databaseReachable: _databaseReachable,
+                  onToggleLanguage: _toggleLanguage,
+                  onToggleTheme: _toggleTheme,
+                  onRefreshDatabaseStatus: _refreshDatabaseStatus,
+                  onBecomeDriver: _switchToDriverRole,
+                  onLogout: _logout,
+                ))
           : (_showSignUp
               ? SignUpPage(
                   language: _language,
@@ -349,6 +387,7 @@ class HomePage extends StatefulWidget {
     required this.onToggleLanguage,
     required this.onToggleTheme,
     required this.onRefreshDatabaseStatus,
+    required this.onBecomeDriver,
     required this.onLogout,
   });
 
@@ -358,6 +397,7 @@ class HomePage extends StatefulWidget {
   final VoidCallback onToggleLanguage;
   final VoidCallback onToggleTheme;
   final Future<void> Function() onRefreshDatabaseStatus;
+  final Future<void> Function() onBecomeDriver;
   final VoidCallback onLogout;
 
   @override
@@ -371,6 +411,7 @@ class _HomePageState extends State<HomePage> {
   List<ActiveRequest> _serviceHistory = const <ActiveRequest>[];
   bool _isLoading = true;
   bool _isRealtimeSubscribed = false;
+  bool _isSwitchingRole = false;
   int _tabIndex = 0;
 
   @override
@@ -378,6 +419,7 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadRequests();
     _subscribeToRealtimeUpdates();
+    _warmupPickupLocation();
   }
 
   @override
@@ -398,6 +440,36 @@ class _HomePageState extends State<HomePage> {
       _isRealtimeSubscribed = true;
     } catch (_) {
       // Keep manual refresh path if realtime is unavailable.
+    }
+  }
+
+  Future<void> _warmupPickupLocation() async {
+    try {
+      final shareLocationEnabled =
+          await AppPreferencesService.getShareLocationEnabled();
+      if (!shareLocationEnabled) {
+        return;
+      }
+
+      final cached = await AppPreferencesService.getLastPickupPlace();
+      if (cached != null) {
+        return;
+      }
+
+      final wasPrompted = await AppPreferencesService.getAutoLocationPrompted();
+      if (wasPrompted) {
+        final silentPlace = await LocationService.tryGetCurrentPlaceSilently();
+        if (silentPlace != null) {
+          await AppPreferencesService.saveLastPickupPlace(silentPlace);
+        }
+        return;
+      }
+
+      await AppPreferencesService.setAutoLocationPrompted(true);
+      final place = await LocationService.getCurrentPlace();
+      await AppPreferencesService.saveLastPickupPlace(place);
+    } catch (_) {
+      // Non-blocking warmup. Manual location buttons remain available.
     }
   }
 
@@ -461,7 +533,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _connectionTitle(AppLanguage language) {
-    return language == AppLanguage.ar ? 'اتصال قاعدة البيانات' : 'Database connection';
+    return language == AppLanguage.ar
+        ? 'اتصال قاعدة البيانات'
+        : 'Database connection';
   }
 
   String _connectionMessage(AppLanguage language) {
@@ -474,6 +548,46 @@ class _HomePageState extends State<HomePage> {
     return language == AppLanguage.ar
         ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
         : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
+  }
+
+  Future<void> _handleBecomeDriver() async {
+    setState(() {
+      _isSwitchingRole = true;
+    });
+
+    try {
+      await widget.onBecomeDriver();
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Account switched to Driver. Opening driver panel...'),
+        ),
+      );
+    } on ClientException catch (e) {
+      if (!mounted) {
+        return;
+      }
+      final message = e.response['message'] as String? ??
+          'Could not switch account to driver. Check users update rule and role field.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not switch account to driver.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSwitchingRole = false;
+        });
+      }
+    }
   }
 
   @override
@@ -618,6 +732,26 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 12),
               _buildActionCard(
                 context,
+                icon: Icons.support_agent_outlined,
+                iconColor: const Color(0xFFF97316),
+                title: widget.language == AppLanguage.ar
+                    ? 'دردشة الدعم'
+                    : 'Support Chat',
+                subtitle: widget.language == AppLanguage.ar
+                    ? 'تحدث مع مساعد ذكي لحل المشاكل بسرعة'
+                    : 'Chat with an AI assistant for quick help',
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          SupportChatPage(language: widget.language),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _buildActionCard(
+                context,
                 icon: Icons.attach_money,
                 iconColor: const Color(0xFF2563EB),
                 title: strings.text('getEstimate'),
@@ -625,9 +759,25 @@ class _HomePageState extends State<HomePage> {
                 onTap: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => GetEstimatePage(language: widget.language),
+                      builder: (_) =>
+                          GetEstimatePage(language: widget.language),
                     ),
                   );
+                },
+              ),
+              const SizedBox(height: 12),
+              _buildActionCard(
+                context,
+                icon: Icons.switch_account_outlined,
+                iconColor: const Color(0xFF7C3AED),
+                title:
+                    _isSwitchingRole ? 'Switching account...' : 'Become Driver',
+                subtitle: 'Change account type and open the driver-only screen',
+                onTap: () {
+                  if (_isSwitchingRole) {
+                    return;
+                  }
+                  _handleBecomeDriver();
                 },
               ),
               const SizedBox(height: 18),
@@ -783,8 +933,9 @@ class _HomePageState extends State<HomePage> {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color:
-            _isDark(context) ? const Color(0xFF1A2336) : const Color(0xFFEFF1F5),
+        color: _isDark(context)
+            ? const Color(0xFF1A2336)
+            : const Color(0xFFEFF1F5),
         borderRadius: BorderRadius.circular(24),
       ),
       child: Row(
@@ -951,7 +1102,9 @@ class _HomePageState extends State<HomePage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: _isDark(context) ? const Color(0xFF101827) : const Color(0xFFF9FAFB),
+          color: _isDark(context)
+              ? const Color(0xFF101827)
+              : const Color(0xFFF9FAFB),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: _borderColor(context)),
         ),
