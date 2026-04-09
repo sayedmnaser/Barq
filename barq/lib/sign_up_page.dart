@@ -17,7 +17,7 @@ class SignUpPage extends StatefulWidget {
     required this.onAuthenticated,
     required this.onGoToSignIn,
   });
-
+ 
   final AppLanguage language;
   final VoidCallback onToggleLanguage;
   final VoidCallback onAuthenticated;
