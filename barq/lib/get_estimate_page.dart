@@ -530,7 +530,11 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
         Text(
           '${value.toStringAsFixed(3)} BHD',
           style: style?.copyWith(
-            color: emphasize ? const Color(0xFF16A34A) : null,
+            color: emphasize
+                ? (Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0xFFF4C21E)
+                    : const Color(0xFF0B1220))
+                : null,
           ),
         ),
       ],

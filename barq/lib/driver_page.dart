@@ -21,9 +21,14 @@ const Color _kDriverBorderLight = Color(0xFFE5E7EB);
 const Color _kDriverMutedLight = Color(0xFF6B7280);
 
 class DriverPage extends StatefulWidget {
-  const DriverPage({super.key, required this.language});
+  const DriverPage({
+    super.key,
+    required this.language,
+    this.onSwitchToCustomerView,
+  });
 
   final AppLanguage language;
+  final VoidCallback? onSwitchToCustomerView;
 
   @override
   State<DriverPage> createState() => _DriverPageState();
@@ -624,6 +629,12 @@ class _DriverPageState extends State<DriverPage> {
       appBar: AppBar(
         title: const Text('Driver Panel'),
         actions: [
+          if (widget.onSwitchToCustomerView != null)
+            IconButton(
+              tooltip: 'Customer Dashboard',
+              onPressed: widget.onSwitchToCustomerView,
+              icon: const Icon(Icons.person_outline),
+            ),
           IconButton(
             tooltip: 'Refresh',
             onPressed: _isSaving ? null : _loadRequests,
@@ -1158,7 +1169,8 @@ class _DriverPageState extends State<DriverPage> {
     return FilledButton.icon(
       onPressed: _isSaving ? null : () => _completeTrip(request),
       style: FilledButton.styleFrom(
-        backgroundColor: const Color(0xFF16A34A),
+        backgroundColor: _kDriverYellow,
+        foregroundColor: _kDriverNavy,
       ),
       icon: const Icon(Icons.task_alt),
       label: const Text('Complete'),
@@ -1173,9 +1185,7 @@ class _DriverPageState extends State<DriverPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
       decoration: BoxDecoration(
-        color: _isDark(context)
-            ? const Color(0xFF101827)
-            : const Color(0xFFF9FAFB),
+        color: _isDark(context) ? _kDriverNavy : const Color(0xFFF7F7FB),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _borderColor(context)),
       ),

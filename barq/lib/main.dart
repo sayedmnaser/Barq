@@ -48,6 +48,7 @@ class _MyAppState extends State<MyApp> {
   bool _isAuthenticated = false;
   bool _showSignUp = false;
   bool? _databaseReachable;
+  bool _showDriverPanel = true;
   StreamSubscription<dynamic>? _authSubscription;
 
   UserProfile _currentUserProfile = const UserProfile(
@@ -75,8 +76,16 @@ class _MyAppState extends State<MyApp> {
       }
       setState(() {
         _isAuthenticated = _pocketBaseService.isAuthenticated;
-        _currentUserProfile =
+        final refreshedProfile =
             _buildUserProfile(_pocketBaseService.currentUserRecord);
+        _currentUserProfile = refreshedProfile;
+        if (!_canAccessDriverPanel()) {
+          _showDriverPanel = false;
+        } else if (_showDriverPanel == false) {
+          // Keep user's chosen view for driver accounts.
+        } else {
+          _showDriverPanel = true;
+        }
         if (_isAuthenticated) {
           _showSignUp = false;
         }
@@ -191,6 +200,7 @@ class _MyAppState extends State<MyApp> {
     }
     setState(() {
       _isAuthenticated = false;
+      _showDriverPanel = true;
       _currentUserProfile = const UserProfile(
         firstName: 'User',
         lastName: '',
@@ -207,6 +217,11 @@ class _MyAppState extends State<MyApp> {
     return User.normalizeRole(role) == 'driver';
   }
 
+  bool _canAccessDriverPanel() {
+    return _isDriverRole(_currentUserProfile.role) &&
+        _pocketBaseService.isCurrentUserDriverToggleEnabled;
+  }
+
   String _roleLabel(String role) {
     final normalized = User.normalizeRole(role);
     if (normalized == 'driver') {
@@ -215,20 +230,18 @@ class _MyAppState extends State<MyApp> {
     return 'Customer';
   }
 
-  Future<void> _switchToDriverRole() async {
-    await _pocketBaseService.updateCurrentUserRole('driver');
-    try {
-      await _pocketBaseService.ensureCurrentDriverProfile();
-    } catch (_) {
-      // Role switch remains successful even if driver profile setup is missing.
-    }
-    final refreshed = await _pocketBaseService.refreshCurrentUserRecord();
-    if (!mounted) {
+  void _openDriverPanel() {
+    if (!_canAccessDriverPanel()) {
       return;
     }
     setState(() {
-      _currentUserProfile =
-          _buildUserProfile(refreshed ?? _pocketBaseService.currentUserRecord);
+      _showDriverPanel = true;
+    });
+  }
+
+  void _openCustomerHome() {
+    setState(() {
+      _showDriverPanel = false;
     });
   }
 
@@ -242,16 +255,46 @@ class _MyAppState extends State<MyApp> {
         colorScheme: ColorScheme.fromSeed(
           seedColor: kLightningYellow,
           brightness: Brightness.light,
+        ).copyWith(
+          primary: kLightningYellow,
+          onPrimary: kLightningNavy,
+          outline: kLightningLightBorder,
+          onSurfaceVariant: kLightningLightMuted,
+          surface: Colors.white,
         ),
         scaffoldBackgroundColor: kLightningLightBackground,
+        cardColor: Colors.white,
+        dividerColor: kLightningLightBorder,
+        hintColor: kLightningLightMuted,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: kLightningLightBackground,
+          foregroundColor: kLightningNavy,
+          elevation: 0,
+          surfaceTintColor: Colors.transparent,
+        ),
         useMaterial3: true,
       ),
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: kLightningYellow,
           brightness: Brightness.dark,
+        ).copyWith(
+          primary: kLightningYellow,
+          onPrimary: kLightningNavy,
+          outline: kLightningBorder,
+          onSurfaceVariant: kLightningMuted,
+          surface: kLightningCard,
         ),
         scaffoldBackgroundColor: kLightningNavy,
+        cardColor: kLightningCard,
+        dividerColor: kLightningBorder,
+        hintColor: kLightningMuted,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: kLightningNavy,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          surfaceTintColor: Colors.transparent,
+        ),
         useMaterial3: true,
       ),
       builder: (context, child) {
@@ -263,16 +306,20 @@ class _MyAppState extends State<MyApp> {
         );
       },
       home: _isAuthenticated
-          ? (_isDriverRole(_currentUserProfile.role)
-              ? DriverPage(language: _language)
+          ? (_canAccessDriverPanel() && _showDriverPanel
+              ? DriverPage(
+                  language: _language,
+                  onSwitchToCustomerView: _openCustomerHome,
+                )
               : HomePage(
                   user: _currentUserProfile,
                   language: _language,
+                  showOpenDriverPanel: _canAccessDriverPanel(),
                   databaseReachable: _databaseReachable,
                   onToggleLanguage: _toggleLanguage,
                   onToggleTheme: _toggleTheme,
                   onRefreshDatabaseStatus: _refreshDatabaseStatus,
-                  onBecomeDriver: _switchToDriverRole,
+                  onOpenDriverPanel: _openDriverPanel,
                   onLogout: _logout,
                 ))
           : (_showSignUp
@@ -383,21 +430,23 @@ class HomePage extends StatefulWidget {
     super.key,
     required this.user,
     required this.language,
+    required this.showOpenDriverPanel,
     required this.databaseReachable,
     required this.onToggleLanguage,
     required this.onToggleTheme,
     required this.onRefreshDatabaseStatus,
-    required this.onBecomeDriver,
+    required this.onOpenDriverPanel,
     required this.onLogout,
   });
 
   final UserProfile user;
   final AppLanguage language;
+  final bool showOpenDriverPanel;
   final bool? databaseReachable;
   final VoidCallback onToggleLanguage;
   final VoidCallback onToggleTheme;
   final Future<void> Function() onRefreshDatabaseStatus;
-  final Future<void> Function() onBecomeDriver;
+  final VoidCallback onOpenDriverPanel;
   final VoidCallback onLogout;
 
   @override
@@ -411,7 +460,6 @@ class _HomePageState extends State<HomePage> {
   List<ActiveRequest> _serviceHistory = const <ActiveRequest>[];
   bool _isLoading = true;
   bool _isRealtimeSubscribed = false;
-  bool _isSwitchingRole = false;
   int _tabIndex = 0;
 
   @override
@@ -548,46 +596,6 @@ class _HomePageState extends State<HomePage> {
     return language == AppLanguage.ar
         ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
         : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
-  }
-
-  Future<void> _handleBecomeDriver() async {
-    setState(() {
-      _isSwitchingRole = true;
-    });
-
-    try {
-      await widget.onBecomeDriver();
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Account switched to Driver. Opening driver panel...'),
-        ),
-      );
-    } on ClientException catch (e) {
-      if (!mounted) {
-        return;
-      }
-      final message = e.response['message'] as String? ??
-          'Could not switch account to driver. Check users update rule and role field.';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not switch account to driver.')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSwitchingRole = false;
-        });
-      }
-    }
   }
 
   @override
@@ -766,21 +774,22 @@ class _HomePageState extends State<HomePage> {
                 },
               ),
               const SizedBox(height: 12),
-              _buildActionCard(
-                context,
-                icon: Icons.switch_account_outlined,
-                iconColor: const Color(0xFF7C3AED),
-                title:
-                    _isSwitchingRole ? 'Switching account...' : 'Become Driver',
-                subtitle: 'Change account type and open the driver-only screen',
-                onTap: () {
-                  if (_isSwitchingRole) {
-                    return;
-                  }
-                  _handleBecomeDriver();
-                },
-              ),
-              const SizedBox(height: 18),
+              if (widget.showOpenDriverPanel) ...[
+                _buildActionCard(
+                  context,
+                  icon: Icons.local_shipping_outlined,
+                  iconColor: const Color(0xFF7C3AED),
+                  title: widget.language == AppLanguage.ar
+                      ? 'فتح لوحة السائق'
+                      : 'Open Driver Panel',
+                  subtitle: widget.language == AppLanguage.ar
+                      ? 'التبديل إلى شاشة السائق في أي وقت'
+                      : 'Switch to the driver screen at any time',
+                  onTap: widget.onOpenDriverPanel,
+                ),
+                const SizedBox(height: 18),
+              ] else
+                const SizedBox(height: 18),
               _buildTabs(context, strings),
               const SizedBox(height: 16),
               if (_isLoading)

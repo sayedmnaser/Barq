@@ -89,6 +89,28 @@ class PocketBaseService {
 
   bool get isCurrentUserDriver => currentUserRole == 'driver';
 
+  bool get isCurrentUserDriverToggleEnabled {
+    final record = currentUserRecord;
+    if (record == null) {
+      return false;
+    }
+
+    const booleanDriverCandidates = <String>[
+      'driver',
+      'Driver',
+      'is_driver',
+      'isDriver',
+    ];
+
+    for (final field in booleanDriverCandidates) {
+      if (record.getBoolValue(field)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   Future<bool> ping() async {
     try {
       final response = await http

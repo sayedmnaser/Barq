@@ -96,7 +96,13 @@ class _SupportChatPageState extends State<SupportChatPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final userBubbleColor = theme.colorScheme.primary;
+    final userTextColor = theme.colorScheme.onPrimary;
+    final assistantBubbleColor = theme.cardColor;
+    final assistantTextColor = theme.textTheme.bodyMedium?.color ??
+        (isDark ? Colors.white : const Color(0xFF111827));
 
     return Scaffold(
       appBar: AppBar(
@@ -123,19 +129,18 @@ class _SupportChatPageState extends State<SupportChatPage> {
                     ),
                     constraints: const BoxConstraints(maxWidth: 320),
                     decoration: BoxDecoration(
-                      color: isUser
-                          ? const Color(0xFF2563EB)
-                          : (isDark
-                              ? const Color(0xFF1F2937)
-                              : const Color(0xFFF3F4F6)),
+                      color: isUser ? userBubbleColor : assistantBubbleColor,
                       borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isUser
+                            ? userBubbleColor.withValues(alpha: 0.4)
+                            : theme.dividerColor,
+                      ),
                     ),
                     child: Text(
                       message.text,
                       style: TextStyle(
-                        color: isUser
-                            ? Colors.white
-                            : (isDark ? Colors.white : const Color(0xFF111827)),
+                        color: isUser ? userTextColor : assistantTextColor,
                       ),
                     ),
                   ),
@@ -165,6 +170,8 @@ class _SupportChatPageState extends State<SupportChatPage> {
                         hintText: _isArabic
                             ? 'اكتب رسالتك...'
                             : 'Type your message...',
+                        filled: true,
+                        fillColor: theme.cardColor,
                         border: const OutlineInputBorder(),
                       ),
                     ),

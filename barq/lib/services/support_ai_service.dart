@@ -17,19 +17,10 @@ class SupportAiService {
   }) async {
     final prompt = isArabic
         ? 'أنت مساعد دعم داخل تطبيق سحب سيارات. أجب بإيجاز وبخطوات عملية واضحة.'
-        : 'You are an in-app support assistant for a towing app. Reply briefly with practical steps.';
+        : 'You are Barq in-app support for towing services only. Answer only app topics like tow requests, drivers, map, pricing, tracking, account, settings, payments, and permissions. If a question is unrelated to the app, politely refuse and redirect to an app-support topic. Keep replies short and actionable.';
 
-    final openRouterKey = AppConfig.openRouterApiKey.trim();
-    if (openRouterKey.isNotEmpty) {
-      final openRouterReply = await _tryOpenRouterReply(
-        apiKey: openRouterKey,
-        userMessage: userMessage,
-        history: history,
-        prompt: prompt,
-      );
-      if (openRouterReply != null && openRouterReply.trim().isNotEmpty) {
-        return openRouterReply.trim();
-      }
+    if (!_isAppRelatedMessage(userMessage)) {
+      return _offTopicReply(isArabic);
     }
 
     final groqKey = AppConfig.groqApiKey.trim();
@@ -42,6 +33,19 @@ class SupportAiService {
       );
       if (groqReply != null && groqReply.trim().isNotEmpty) {
         return groqReply.trim();
+      }
+    }
+
+    final openRouterKey = AppConfig.openRouterApiKey.trim();
+    if (openRouterKey.isNotEmpty) {
+      final openRouterReply = await _tryOpenRouterReply(
+        apiKey: openRouterKey,
+        userMessage: userMessage,
+        history: history,
+        prompt: prompt,
+      );
+      if (openRouterReply != null && openRouterReply.trim().isNotEmpty) {
+        return openRouterReply.trim();
       }
     }
 
@@ -376,6 +380,109 @@ class SupportAiService {
     }
     final trimmed = body.trim();
     return trimmed.length <= 220 ? trimmed : '${trimmed.substring(0, 220)}...';
+  }
+
+  bool _isAppRelatedMessage(String message) {
+    final text = message.trim().toLowerCase();
+    if (text.isEmpty) {
+      return true;
+    }
+
+    const neutralPhrases = <String>[
+      'hi',
+      'hello',
+      'hey',
+      'thanks',
+      'thank you',
+      'ok',
+      'okay',
+      'مرحبا',
+      'اهلا',
+      'شكرا',
+    ];
+    if (neutralPhrases.contains(text)) {
+      return true;
+    }
+
+    const appKeywords = <String>[
+      'barq',
+      'tow',
+      'towing',
+      'driver',
+      'customer',
+      'request',
+      'service',
+      'track',
+      'tracking',
+      'eta',
+      'distance',
+      'fare',
+      'price',
+      'pricing',
+      'payment',
+      'wallet',
+      'map',
+      'location',
+      'gps',
+      'route',
+      'pickup',
+      'destination',
+      'drop',
+      'account',
+      'login',
+      'sign in',
+      'signup',
+      'sign up',
+      'otp',
+      'phone',
+      'email',
+      'settings',
+      'language',
+      'theme',
+      'role',
+      'driver panel',
+      'support',
+      'chat',
+      'permission',
+      'notification',
+      'cancel',
+      'assigned',
+      'en_route',
+      'completed',
+      'pocketbase',
+      'api',
+      'apk',
+      'سحب',
+      'ونش',
+      'قطر',
+      'سيارة',
+      'سائق',
+      'عميل',
+      'طلب',
+      'خدمة',
+      'تتبع',
+      'خريطة',
+      'موقع',
+      'تسعير',
+      'سعر',
+      'دفع',
+      'حساب',
+      'تسجيل',
+      'دخول',
+      'اعدادات',
+      'إعدادات',
+      'لغة',
+      'دعم',
+      'برق',
+    ];
+
+    return appKeywords.any(text.contains);
+  }
+
+  String _offTopicReply(bool isArabic) {
+    return isArabic
+        ? 'يمكنني المساعدة فقط في مواضيع تطبيق برق مثل الطلبات، السائق، الخريطة، التسعير، الدفع، الحساب، والإعدادات. اكتب مشكلتك داخل التطبيق وسأعطيك خطوات مباشرة.'
+        : 'I can only help with Barq app topics (requests, drivers, map, pricing, payments, account, and settings). Please share your app issue and I will give direct steps.';
   }
 
   String _fallbackReply(String message, bool isArabic) {

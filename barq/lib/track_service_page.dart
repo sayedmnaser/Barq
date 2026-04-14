@@ -9,6 +9,13 @@ import 'services/pocketbase_service.dart';
 import 'settings.dart';
 import 'widgets/barq_live_map.dart';
 
+const Color _kBarqYellow = Color(0xFFF4C21E);
+const Color _kBarqNavy = Color(0xFF0B1220);
+const Color _kBarqSoftDark = Color(0xFF1A2336);
+const Color _kBarqSoftLight = Color(0xFFEFF1F5);
+const Color _kBarqFieldDark = Color(0xFF101827);
+const Color _kBarqFieldLight = Color(0xFFF9FAFB);
+
 class TrackServicePage extends StatefulWidget {
   const TrackServicePage({
     super.key,
@@ -507,6 +514,18 @@ class _TrackServicePageState extends State<TrackServicePage> {
     }
   }
 
+  bool _isDark(BuildContext context) {
+    return Theme.of(context).brightness == Brightness.dark;
+  }
+
+  Color _softSurface(BuildContext context) {
+    return _isDark(context) ? _kBarqSoftDark : _kBarqSoftLight;
+  }
+
+  Color _fieldSurface(BuildContext context) {
+    return _isDark(context) ? _kBarqFieldDark : _kBarqFieldLight;
+  }
+
   Future<void> _refreshPage() async {
     if (widget.requestId != null) {
       await _loadLatestRequest(showLoader: true);
@@ -713,12 +732,12 @@ class _TrackServicePageState extends State<TrackServicePage> {
                     children: [
                       CircleAvatar(
                         radius: 26,
-                        backgroundColor: const Color(0xFFF4C21E),
+                        backgroundColor: _kBarqYellow,
                         child: Text(
                           _driverName.isEmpty ? '?' : _driverName[0],
                           style:
                               Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    color: const Color(0xFF0B1220),
+                                    color: _kBarqNavy,
                                     fontWeight: FontWeight.w800,
                                   ),
                         ),
@@ -882,18 +901,19 @@ class _TrackServicePageState extends State<TrackServicePage> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Theme.of(context).brightness == Brightness.dark
-            ? const Color(0xFF1F2937)
-            : const Color(0xFFFFFBEB),
+        color: _softSurface(context),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFF59E0B)),
+        border: Border.all(color: Theme.of(context).dividerColor),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(top: 2),
-            child: Icon(Icons.info_outline, color: Color(0xFFF59E0B)),
+            child: Icon(
+              Icons.info_outline,
+              color: Theme.of(context).colorScheme.primary,
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -951,16 +971,13 @@ class _TrackServicePageState extends State<TrackServicePage> {
     required bool active,
     required bool done,
   }) {
+    final primary = Theme.of(context).colorScheme.primary;
+    final foreground = done || active
+        ? Theme.of(context).colorScheme.onPrimary
+        : Theme.of(context).hintColor;
     final background = done
-        ? const Color(0xFFDCFCE7)
-        : (active
-            ? const Color(0xFFFEF3C7)
-            : (Theme.of(context).brightness == Brightness.dark
-                ? const Color(0xFF111827)
-                : const Color(0xFFF3F4F6)));
-    final foreground = done
-        ? const Color(0xFF166534)
-        : (active ? const Color(0xFF92400E) : Theme.of(context).hintColor);
+        ? primary.withValues(alpha: 0.28)
+        : (active ? primary.withValues(alpha: 0.18) : _fieldSurface(context));
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
@@ -997,10 +1014,10 @@ class _TrackServicePageState extends State<TrackServicePage> {
           width: 38,
           height: 38,
           decoration: BoxDecoration(
-            color: const Color(0xFFF4C21E).withValues(alpha: 0.16),
+            color: _kBarqYellow.withValues(alpha: 0.16),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Icon(icon, color: const Color(0xFFF4C21E)),
+          child: Icon(icon, color: _kBarqYellow),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -1035,9 +1052,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Theme.of(context).brightness == Brightness.dark
-            ? const Color(0xFF101827)
-            : const Color(0xFFF9FAFB),
+        color: _fieldSurface(context),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Theme.of(context).dividerColor),
       ),
@@ -1092,7 +1107,11 @@ class _TrackServicePageState extends State<TrackServicePage> {
         Text(
           valueText ?? '${(value ?? 0).toStringAsFixed(3)} BHD',
           style: style?.copyWith(
-            color: emphasize ? const Color(0xFF16A34A) : null,
+            color: emphasize
+                ? (_isDark(context)
+                    ? _kBarqYellow
+                    : Theme.of(context).colorScheme.onSurface)
+                : null,
           ),
         ),
       ],
