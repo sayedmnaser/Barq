@@ -17,6 +17,8 @@ class TowRequest {
     this.driverLat,
     this.driverLng,
     this.driverName,
+    this.driverUserId,
+    this.driverPhone,
     this.driverRating,
     this.driverTotalRides,
     this.licensePlate,
@@ -24,6 +26,10 @@ class TowRequest {
     this.etaMinutes,
     this.baseFare,
     this.distanceFare,
+    this.rated = false,
+    this.pickupPhoto,
+    this.dropoffPhoto,
+    this.damagePhotos = const <String>[],
     required this.created,
     required this.updated,
   });
@@ -43,6 +49,8 @@ class TowRequest {
   final double? driverLat;
   final double? driverLng;
   final String? driverName;
+  final String? driverUserId;
+  final String? driverPhone;
   final double? driverRating;
   final int? driverTotalRides;
   final String? licensePlate;
@@ -50,6 +58,10 @@ class TowRequest {
   final int? etaMinutes;
   final double? baseFare;
   final double? distanceFare;
+  final bool rated;
+  final String? pickupPhoto;
+  final String? dropoffPhoto;
+  final List<String> damagePhotos;
   final DateTime created;
   final DateTime updated;
 
@@ -75,6 +87,8 @@ class TowRequest {
       driverLat: _nullableDouble(record, 'driver_lat'),
       driverLng: _nullableDouble(record, 'driver_lng'),
       driverName: _nullableString(record.getStringValue('driver_name')),
+      driverUserId: _nullableString(record.getStringValue('driver')),
+      driverPhone: _nullableString(record.getStringValue('driver_phone')),
       driverRating: _nullableDouble(record, 'driver_rating'),
       driverTotalRides: _nullableInt(record, 'driver_total_rides'),
       licensePlate: _nullableString(record.getStringValue('license_plate')),
@@ -82,6 +96,13 @@ class TowRequest {
       etaMinutes: _nullableInt(record, 'eta_minutes'),
       baseFare: _nullableDouble(record, 'base_fare'),
       distanceFare: _nullableDouble(record, 'distance_fare'),
+      rated: record.getBoolValue('rated'),
+      pickupPhoto:
+          _nullableString(record.getStringValue('pickup_photo')),
+      dropoffPhoto:
+          _nullableString(record.getStringValue('dropoff_photo')),
+      damagePhotos:
+          List<String>.from(record.getListValue<String>('damage_photos')),
       created: DateTime.tryParse(record.getStringValue('created')) ??
           DateTime.now(),
       updated: DateTime.tryParse(record.getStringValue('updated')) ??

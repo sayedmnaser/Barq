@@ -75,7 +75,13 @@ class _SupportChatPageState extends State<SupportChatPage> {
     }
 
     setState(() {
-      _messages.add(_ChatMessage(role: _ChatRole.assistant, text: reply));
+      _messages.add(
+        _ChatMessage(
+          role: _ChatRole.assistant,
+          text: reply.text,
+          qaId: reply.qaId,
+        ),
+      );
       _isReplying = false;
     });
     _scrollToBottom();
@@ -92,6 +98,26 @@ class _SupportChatPageState extends State<SupportChatPage> {
         curve: Curves.easeOut,
       );
     });
+  }
+
+  Future<void> _voteMessage(_ChatMessage message, int vote) async {
+    final qaId = message.qaId;
+    if (qaId == null || qaId.isEmpty || message.vote != 0) return;
+    setState(() {
+      message.vote = vote;
+    });
+    await _supportAiService.markHelpful(qaId: qaId, vote: vote);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          vote > 0
+              ? (_isArabic ? 'شكرًا، سيستفيد منها العملاء الآخرون.' : 'Thanks — saved as a helpful answer.')
+              : (_isArabic ? 'تم تسجيل الملاحظة. سنحسن الإجابات.' : 'Noted — we will improve future answers.'),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   @override
@@ -121,28 +147,73 @@ class _SupportChatPageState extends State<SupportChatPage> {
                 return Align(
                   alignment:
                       isUser ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    constraints: const BoxConstraints(maxWidth: 320),
-                    decoration: BoxDecoration(
-                      color: isUser ? userBubbleColor : assistantBubbleColor,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isUser
-                            ? userBubbleColor.withValues(alpha: 0.4)
-                            : theme.dividerColor,
+                  child: Column(
+                    crossAxisAlignment: isUser
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        constraints: const BoxConstraints(maxWidth: 320),
+                        decoration: BoxDecoration(
+                          color:
+                              isUser ? userBubbleColor : assistantBubbleColor,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isUser
+                                ? userBubbleColor.withValues(alpha: 0.4)
+                                : theme.dividerColor,
+                          ),
+                        ),
+                        child: Text(
+                          message.text,
+                          style: TextStyle(
+                            color: isUser ? userTextColor : assistantTextColor,
+                          ),
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      message.text,
-                      style: TextStyle(
-                        color: isUser ? userTextColor : assistantTextColor,
-                      ),
-                    ),
+                      if (!isUser &&
+                          message.qaId != null &&
+                          message.qaId!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, bottom: 10),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _voteIcon(
+                                icon: Icons.thumb_up_alt_outlined,
+                                activeIcon: Icons.thumb_up,
+                                active: message.vote == 1,
+                                disabled: message.vote != 0,
+                                onTap: () => _voteMessage(message, 1),
+                              ),
+                              const SizedBox(width: 12),
+                              _voteIcon(
+                                icon: Icons.thumb_down_alt_outlined,
+                                activeIcon: Icons.thumb_down,
+                                active: message.vote == -1,
+                                disabled: message.vote != 0,
+                                onTap: () => _voteMessage(message, -1),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _isArabic
+                                    ? 'هل كانت هذه الإجابة مفيدة؟'
+                                    : 'Was this helpful?',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                      color: theme.hintColor,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        const SizedBox(height: 6),
+                    ],
                   ),
                 );
               },
@@ -189,16 +260,36 @@ class _SupportChatPageState extends State<SupportChatPage> {
       ),
     );
   }
+
+  Widget _voteIcon({
+    required IconData icon,
+    required IconData activeIcon,
+    required bool active,
+    required bool disabled,
+    required VoidCallback onTap,
+  }) {
+    final color = active
+        ? (Theme.of(context).colorScheme.primary)
+        : Theme.of(context).hintColor;
+    return InkResponse(
+      onTap: disabled ? null : onTap,
+      radius: 18,
+      child: Icon(active ? activeIcon : icon, size: 16, color: color),
+    );
+  }
 }
 
 enum _ChatRole { user, assistant }
 
 class _ChatMessage {
-  const _ChatMessage({
+  _ChatMessage({
     required this.role,
     required this.text,
+    this.qaId,
   });
 
   final _ChatRole role;
   final String text;
+  final String? qaId;
+  int vote = 0;
 }

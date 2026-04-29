@@ -39,27 +39,14 @@ class _SignInPageState extends State<SignInPage> {
   bool _isSubmitting = false;
   bool _otpSent = false;
   String? _otpId;
-  bool? _serverReachable;
 
   bool get _isArabic => widget.language == AppLanguage.ar;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkConnection();
-  }
 
   @override
   void dispose() {
     _identityController.dispose();
     _otpController.dispose();
     super.dispose();
-  }
-
-  Future<void> _checkConnection() async {
-    final reachable = await _pocketBaseService.ping();
-    if (!mounted) return;
-    setState(() => _serverReachable = reachable);
   }
 
   bool _isDark(BuildContext context) =>
@@ -158,19 +145,6 @@ class _SignInPageState extends State<SignInPage> {
     }
   }
 
-  String get _connectionTitle =>
-      _isArabic ? 'اتصال PocketBase' : 'PocketBase connection';
-
-  String get _connectionMessage {
-    if (_serverReachable == true) {
-      return _isArabic
-          ? 'الخادم متصل وجاهز لتسجيل الدخول.'
-          : 'Server is reachable and ready for sign in.';
-    }
-    return _isArabic
-        ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
-        : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -246,70 +220,6 @@ class _SignInPageState extends State<SignInPage> {
                             ?.copyWith(color: _mutedColor(context)),
                       ),
                       const SizedBox(height: 16),
-
-                      // ── Connection banner ──
-                      Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: _serverReachable == true
-                              ? const Color(0xFFECFDF3)
-                              : (_isDark(context)
-                                  ? const Color(0xFF2A1A15)
-                                  : const Color(0xFFFFF7ED)),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: _serverReachable == true
-                                ? const Color(0xFF22C55E)
-                                : const Color(0xFFF97316),
-                          ),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(
-                              _serverReachable == true
-                                  ? Icons.cloud_done_outlined
-                                  : Icons.cloud_off_outlined,
-                              color: _serverReachable == true
-                                  ? const Color(0xFF16A34A)
-                                  : const Color(0xFFF97316),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _connectionTitle,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall
-                                        ?.copyWith(
-                                            fontWeight: FontWeight.w700),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _connectionMessage,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall,
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    _pocketBaseService.serverUrl,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                            color: _mutedColor(context)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 20),
 
                       // ── OTP delivery toggle ──
                       Row(

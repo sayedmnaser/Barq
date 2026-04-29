@@ -144,36 +144,26 @@ class _RequestTowPageState extends State<RequestTowPage> {
     }
   }
 
-  double get _baseFare {
-    switch (_vehicleKind) {
-      case TowVehicleKind.sedan:
-        return 8.0;
-      case TowVehicleKind.suv:
-        return 10.5;
-      case TowVehicleKind.motorcycle:
-        return 6.5;
-      case TowVehicleKind.flatbed:
-        return 13.5;
-    }
+  static const double _nightSurchargeBhd = 5.0;
+
+  static double tierFareForDistance(double km) {
+    if (km <= 0) return 10.0;
+    if (km <= 15) return 10.0;
+    if (km <= 20) return 15.0;
+    return 20.0;
   }
 
-  double get _perKmRate {
-    switch (_vehicleKind) {
-      case TowVehicleKind.sedan:
-        return 0.85;
-      case TowVehicleKind.suv:
-        return 1.0;
-      case TowVehicleKind.motorcycle:
-        return 0.70;
-      case TowVehicleKind.flatbed:
-        return 1.35;
-    }
+  bool get _isNightHour {
+    final hour = DateTime.now().hour;
+    return hour >= 22 || hour < 6;
   }
+
+  double get _baseFare => tierFareForDistance(_distanceKm);
 
   double get _distanceKm => _routeInfo?.distanceKm ?? 0;
   int get _etaMinutes =>
       _routeInfo?.durationMinutes ?? (_serviceTiming == 0 ? 15 : 30);
-  double get _distanceFare => _distanceKm * _perKmRate;
+  double get _distanceFare => _isNightHour ? _nightSurchargeBhd : 0.0;
   double get _totalFare => _baseFare + _distanceFare;
 
   Future<void> _pickLocation(
@@ -881,16 +871,20 @@ class _RequestTowPageState extends State<RequestTowPage> {
                 children: [
                   _priceRow(
                     context,
-                    label: strings.text('estimateBaseFare'),
+                    label:
+                        '${strings.text('estimateBaseFare')} (${_distanceKm.toStringAsFixed(1)} km)',
                     value: _baseFare,
                   ),
-                  const SizedBox(height: 10),
-                  _priceRow(
-                    context,
-                    label:
-                        '${strings.text('estimateDistanceFare')} (${_distanceKm.toStringAsFixed(1)} km)',
-                    value: _distanceFare,
-                  ),
+                  if (_distanceFare > 0) ...[
+                    const SizedBox(height: 10),
+                    _priceRow(
+                      context,
+                      label: widget.language == AppLanguage.ar
+                          ? 'رسوم الليل'
+                          : 'Night surcharge',
+                      value: _distanceFare,
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   _priceRow(
                     context,

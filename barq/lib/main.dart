@@ -4,12 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:pocketbase/pocketbase.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'become_driver_page.dart';
 import 'driver_page.dart';
 import 'get_estimate_page.dart';
 import 'models/tow_request_model.dart';
+import 'rate_driver_sheet.dart';
+import 'report_driver_page.dart';
 import 'models/user_model.dart';
 import 'request_tow_page.dart';
 import 'services/app_preferences_service.dart';
+import 'services/driver_location_service.dart';
 import 'services/location_service.dart';
 import 'services/pocketbase_service.dart';
 import 'settings.dart';
@@ -47,7 +51,6 @@ class _MyAppState extends State<MyApp> {
   AppLanguage _language = AppLanguage.en;
   bool _isAuthenticated = false;
   bool _showSignUp = false;
-  bool? _databaseReachable;
   bool _showDriverPanel = true;
   StreamSubscription<dynamic>? _authSubscription;
 
@@ -92,23 +95,12 @@ class _MyAppState extends State<MyApp> {
       });
     });
 
-    _refreshDatabaseStatus();
   }
 
   @override
   void dispose() {
     _authSubscription?.cancel();
     super.dispose();
-  }
-
-  Future<void> _refreshDatabaseStatus() async {
-    final reachable = await _pocketBaseService.ping();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _databaseReachable = reachable;
-    });
   }
 
   Future<void> _loadPreferences() async {
@@ -194,6 +186,7 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _logout() async {
+    await DriverLocationService.instance.stop();
     await _pocketBaseService.signOut();
     if (!mounted) {
       return;
@@ -315,10 +308,8 @@ class _MyAppState extends State<MyApp> {
                   user: _currentUserProfile,
                   language: _language,
                   showOpenDriverPanel: _canAccessDriverPanel(),
-                  databaseReachable: _databaseReachable,
                   onToggleLanguage: _toggleLanguage,
                   onToggleTheme: _toggleTheme,
-                  onRefreshDatabaseStatus: _refreshDatabaseStatus,
                   onOpenDriverPanel: _openDriverPanel,
                   onLogout: _logout,
                 ))
@@ -327,7 +318,6 @@ class _MyAppState extends State<MyApp> {
                   language: _language,
                   onToggleLanguage: _toggleLanguage,
                   onAuthenticated: () {
-                    _refreshDatabaseStatus();
                     if (!mounted) {
                       return;
                     }
@@ -342,7 +332,6 @@ class _MyAppState extends State<MyApp> {
                   language: _language,
                   onToggleLanguage: _toggleLanguage,
                   onAuthenticated: () {
-                    _refreshDatabaseStatus();
                     if (!mounted) {
                       return;
                     }
@@ -378,6 +367,9 @@ class ActiveRequest {
     this.destinationLng,
     this.driverLat,
     this.driverLng,
+    this.driverUserId,
+    this.rated = false,
+    required this.source,
   });
 
   final String id;
@@ -399,6 +391,9 @@ class ActiveRequest {
   final double? destinationLng;
   final double? driverLat;
   final double? driverLng;
+  final String? driverUserId;
+  final bool rated;
+  final TowRequest source;
 
   factory ActiveRequest.fromTowRequest(TowRequest request) {
     return ActiveRequest(
@@ -421,6 +416,9 @@ class ActiveRequest {
       destinationLng: request.destinationLng,
       driverLat: request.driverLat,
       driverLng: request.driverLng,
+      driverUserId: request.driverUserId,
+      rated: request.rated,
+      source: request,
     );
   }
 }
@@ -431,10 +429,8 @@ class HomePage extends StatefulWidget {
     required this.user,
     required this.language,
     required this.showOpenDriverPanel,
-    required this.databaseReachable,
     required this.onToggleLanguage,
     required this.onToggleTheme,
-    required this.onRefreshDatabaseStatus,
     required this.onOpenDriverPanel,
     required this.onLogout,
   });
@@ -442,10 +438,8 @@ class HomePage extends StatefulWidget {
   final UserProfile user;
   final AppLanguage language;
   final bool showOpenDriverPanel;
-  final bool? databaseReachable;
   final VoidCallback onToggleLanguage;
   final VoidCallback onToggleTheme;
-  final Future<void> Function() onRefreshDatabaseStatus;
   final VoidCallback onOpenDriverPanel;
   final VoidCallback onLogout;
 
@@ -563,6 +557,43 @@ class _HomePageState extends State<HomePage> {
     return _isDark(context) ? kLightningMuted : kLightningLightMuted;
   }
 
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'pending':
+        return const Color(0xFF6B7280);
+      case 'assigned':
+        return const Color(0xFF2563EB);
+      case 'en_route':
+        return const Color(0xFFF59E0B);
+      case 'completed':
+        return const Color(0xFF16A34A);
+      case 'cancelled':
+        return const Color(0xFFDC2626);
+      case 'cancel_pending':
+        return const Color(0xFFB45309);
+      default:
+        return kLightningYellow;
+    }
+  }
+
+  Widget _statusPill(BuildContext context, String status, AppStrings strings) {
+    final color = _statusColor(status);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        _statusLabel(status, strings),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+
   String _statusLabel(String status, AppStrings strings) {
     switch (status) {
       case 'pending':
@@ -580,23 +611,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  String _connectionTitle(AppLanguage language) {
-    return language == AppLanguage.ar
-        ? 'اتصال قاعدة البيانات'
-        : 'Database connection';
-  }
-
-  String _connectionMessage(AppLanguage language) {
-    final reachable = widget.databaseReachable;
-    if (reachable == true) {
-      return language == AppLanguage.ar
-          ? 'PocketBase متصل ويعمل.'
-          : 'PocketBase is connected and reachable.';
-    }
-    return language == AppLanguage.ar
-        ? 'تأكد من تشغيل PocketBase وتمرير POCKETBASE_URL الصحيح.'
-        : 'Make sure PocketBase is running and POCKETBASE_URL is correct.';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -604,10 +618,7 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       body: SafeArea(
         child: RefreshIndicator(
-          onRefresh: () async {
-            await widget.onRefreshDatabaseStatus();
-            await _loadRequests();
-          },
+          onRefresh: _loadRequests,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
             children: [
@@ -627,57 +638,6 @@ class _HomePageState extends State<HomePage> {
                     ),
               ),
               const SizedBox(height: 18),
-              if (widget.databaseReachable != true) ...[
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: _isDark(context)
-                        ? const Color(0xFF2A1A15)
-                        : const Color(0xFFFFF7ED),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFF97316)),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.only(top: 2),
-                        child: Icon(Icons.cloud_off_outlined,
-                            color: Color(0xFFF97316)),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _connectionTitle(widget.language),
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleSmall
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _connectionMessage(widget.language),
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              _pocketBaseService.serverUrl,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: _mutedColor(context)),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
               _buildActionCard(
                 context,
                 icon: Icons.local_shipping_outlined,
@@ -787,9 +747,30 @@ class _HomePageState extends State<HomePage> {
                       : 'Switch to the driver screen at any time',
                   onTap: widget.onOpenDriverPanel,
                 ),
+                const SizedBox(height: 12),
+              ],
+              if (!widget.showOpenDriverPanel) ...[
+                _buildActionCard(
+                  context,
+                  icon: Icons.badge_outlined,
+                  iconColor: const Color(0xFF059669),
+                  title: widget.language == AppLanguage.ar
+                      ? 'كن سائقًا'
+                      : 'Become a driver',
+                  subtitle: widget.language == AppLanguage.ar
+                      ? 'قدّم طلبك للمراجعة بواسطة الذكاء الاصطناعي'
+                      : 'Submit documents for AI review',
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const BecomeDriverPage(),
+                      ),
+                    );
+                  },
+                ),
                 const SizedBox(height: 18),
               ] else
-                const SizedBox(height: 18),
+                const SizedBox(height: 6),
               _buildTabs(context, strings),
               const SizedBox(height: 16),
               if (_isLoading)
@@ -1049,21 +1030,7 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: kLightningYellow,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  _statusLabel(request.statusLabel, strings),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: kLightningNavy,
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-              ),
+              _statusPill(context, request.statusLabel, strings),
             ],
           ),
           const SizedBox(height: 14),
@@ -1081,12 +1048,23 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(height: 16),
           Row(
             children: [
-              _infoPill(
-                context,
-                icon: Icons.schedule,
-                label: strings.text('eta'),
-                value: '${request.etaMinutes} min',
-              ),
+              if (request.statusLabel == 'completed' ||
+                  request.statusLabel == 'cancelled')
+                _infoPill(
+                  context,
+                  icon: Icons.event_outlined,
+                  label: strings.text('serviceHistory'),
+                  value: _formatShortDate(request.source.updated),
+                )
+              else
+                _infoPill(
+                  context,
+                  icon: Icons.schedule,
+                  label: strings.text('eta'),
+                  value: request.etaMinutes > 0
+                      ? '${request.etaMinutes} min'
+                      : '--',
+                ),
               const SizedBox(width: 12),
               _infoPill(
                 context,
@@ -1094,10 +1072,151 @@ class _HomePageState extends State<HomePage> {
                 label: strings.text('distance'),
                 value: '${request.distanceKm.toStringAsFixed(1)} km',
               ),
+              if (request.source.totalFare > 0) ...[
+                const SizedBox(width: 12),
+                _infoPill(
+                  context,
+                  icon: Icons.payments_outlined,
+                  label: 'Fare',
+                  value: '${request.source.totalFare.toStringAsFixed(3)} BHD',
+                ),
+              ],
             ],
           ),
+          if (request.statusLabel == 'completed') ...[
+            const SizedBox(height: 12),
+            _historyActions(context, request),
+          ],
         ],
       ),
+    );
+  }
+
+  String _formatShortDate(DateTime value) {
+    final m = value.month.toString().padLeft(2, '0');
+    final d = value.day.toString().padLeft(2, '0');
+    return '${value.year}-$m-$d';
+  }
+
+  Widget _historyActions(BuildContext context, ActiveRequest request) {
+    final hasDriverInfo =
+        request.driverUserId != null || request.driverName.trim().isNotEmpty;
+    final canRate = hasDriverInfo && !request.rated;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (request.rated) _buildGivenRatingBadge(context, request),
+        if (request.rated) const SizedBox(height: 8),
+        Row(
+          children: [
+            if (canRate)
+              Expanded(
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.star_outline),
+                  label: const Text('Rate'),
+                  onPressed: () async {
+                    var driverUserId = request.driverUserId;
+                    if (driverUserId == null || driverUserId.isEmpty) {
+                      driverUserId = await _pocketBaseService
+                          .resolveDriverUserIdByName(request.driverName);
+                    }
+                    if (driverUserId == null || driverUserId.isEmpty) {
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not identify the driver to rate. Try again later.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    if (!context.mounted) return;
+                    final saved = await RateDriverSheet.show(
+                      context,
+                      request: request.source,
+                      driverUserId: driverUserId,
+                    );
+                    if (saved == true) {
+                      await _loadRequests();
+                    }
+                  },
+                ),
+              ),
+            if (canRate) const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.flag_outlined,
+                    color: Colors.red, size: 18),
+                label: Text(
+                  canRate ? 'Report' : 'Report bad driver',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: const TextStyle(color: Colors.red),
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.red,
+                ),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => ReportDriverPage(
+                        driverUserId: request.driverUserId,
+                        driverName: request.driverName,
+                        towRequest: request.source,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGivenRatingBadge(BuildContext context, ActiveRequest request) {
+    return FutureBuilder<RecordModel?>(
+      future: _pocketBaseService.getRatingForRequest(request.id),
+      builder: (context, snapshot) {
+        final record = snapshot.data;
+        final stars = record?.getIntValue('stars') ?? 0;
+        final comment = record?.getStringValue('comment').trim() ?? '';
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: _isDark(context)
+                ? const Color(0xFF101827)
+                : const Color(0xFFF9FAFB),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: _borderColor(context)),
+          ),
+          child: Row(
+            children: [
+              ...List.generate(5, (i) {
+                return Icon(
+                  i < stars ? Icons.star : Icons.star_border,
+                  color: Colors.amber,
+                  size: 16,
+                );
+              }),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  comment.isEmpty ? 'You rated this trip' : comment,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: _mutedColor(context),
+                      ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

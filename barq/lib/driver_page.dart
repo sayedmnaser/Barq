@@ -1,12 +1,19 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:pocketbase/pocketbase.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models/place_result.dart';
 import 'models/tow_request_model.dart';
 import 'services/bahrain_map_service.dart';
+import 'services/driver_location_service.dart';
 import 'services/location_service.dart';
+import 'services/moderation_ai_service.dart';
 import 'services/pocketbase_service.dart';
 import 'settings.dart';
 import 'track_service_page.dart';
@@ -49,17 +56,25 @@ class _DriverPageState extends State<DriverPage> {
 
   List<TowRequest> _pendingRequests = const <TowRequest>[];
   List<TowRequest> _myActiveRequests = const <TowRequest>[];
+  List<TowRequest> _myHistoryRequests = const <TowRequest>[];
+  List<RecordModel> _myRatings = const <RecordModel>[];
+  Set<String> _declinedRequestIds = <String>{};
+  double _myAverageRating = 0;
   TowRequest? _focusedRequest;
   PlaceResult? _focusedPickupPlace;
   PlaceResult? _focusedDestinationPlace;
+  PlaceResult? _driverLivePlace;
   RouteInfo? _focusedRouteInfo;
   String? _mapNotice;
   String _lastMapSignature = '';
   bool _isLoading = true;
   bool _isSaving = false;
   bool _isLoadingMap = false;
+  bool _isScanningPlate = false;
+  bool _isAvailable = true;
   late final bool _hasDriverAccess;
   Timer? _refreshTimer;
+  Timer? _driverLocationTimer;
 
   @override
   void initState() {
@@ -73,16 +88,25 @@ class _DriverPageState extends State<DriverPage> {
       return;
     }
 
+    _loadDeclinedIds();
     _bootstrapDriverData();
 
     _refreshTimer = Timer.periodic(const Duration(seconds: 12), (_) {
       _loadRequests(silent: true);
     });
+    _refreshDriverLocation();
+    _driverLocationTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      _refreshDriverLocation();
+    });
+    if (_isAvailable) {
+      DriverLocationService.instance.start();
+    }
   }
 
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _driverLocationTimer?.cancel();
     _driverNameController.dispose();
     _licensePlateController.dispose();
     _driverRatingController.dispose();
@@ -111,6 +135,59 @@ class _DriverPageState extends State<DriverPage> {
   Future<void> _bootstrapDriverData() async {
     await _loadDriverProfileDefaults();
     await _loadRequests();
+  }
+
+  String? _resolveOwnPhone() {
+    final record = _pocketBaseService.currentUserRecord;
+    if (record == null) return null;
+    final phone = record.getIntValue('phoneNumber');
+    if (phone <= 0) return null;
+    return '+$phone';
+  }
+
+  String get _declinedKey {
+    final userId = _pocketBaseService.currentUserRecord?.id ?? 'anon';
+    return 'driver_declined_$userId';
+  }
+
+  Future<void> _loadDeclinedIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_declinedKey) ?? const <String>[];
+      if (!mounted) return;
+      setState(() {
+        _declinedRequestIds = list.toSet();
+      });
+    } catch (_) {
+      // best-effort: if SharedPreferences fails the list stays empty
+    }
+  }
+
+  Future<void> _persistDeclinedIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_declinedKey, _declinedRequestIds.toList());
+    } catch (_) {
+      // non-fatal
+    }
+  }
+
+  Future<void> _declineRequest(TowRequest request) async {
+    setState(() {
+      _declinedRequestIds = {..._declinedRequestIds, request.id};
+      _pendingRequests = _pendingRequests
+          .where((item) => item.id != request.id)
+          .toList(growable: false);
+      if (_focusedRequest?.id == request.id) {
+        _focusedRequest = null;
+      }
+    });
+    await _persistDeclinedIds();
+    _syncFocusedRequestMap();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Request declined.')),
+    );
   }
 
   Future<void> _loadDriverProfileDefaults() async {
@@ -143,25 +220,38 @@ class _DriverPageState extends State<DriverPage> {
       if (defaultDistance > 0) {
         _distanceKmController.text = defaultDistance.toStringAsFixed(1);
       }
+      final available = profile.getBoolValue('is_available');
+      setState(() {
+        _isAvailable = available;
+      });
+      if (!available) {
+        await DriverLocationService.instance.stop();
+      } else {
+        await DriverLocationService.instance.start();
+      }
     } catch (_) {
       // Missing profile is non-blocking. Driver can still operate.
     }
   }
 
-  Future<void> _saveDriverProfile() async {
+  Future<void> _saveDriverProfile({bool silent = false}) async {
     final driverName = _driverNameController.text.trim();
     if (driverName.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Driver name is required.')),
-      );
+      if (!silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Driver name is required.')),
+        );
+      }
       return;
     }
 
     try {
-      final currentPlace = await LocationService.tryGetCurrentPlaceSilently();
+      final currentPlace =
+          _driverLivePlace ?? await LocationService.tryGetCurrentPlaceSilently();
       await _pocketBaseService.upsertCurrentDriverProfile(
         driverName: driverName,
         licensePlate: _licensePlateController.text.trim(),
+        driverPhone: _resolveOwnPhone(),
         driverRating: _tryParseDouble(_driverRatingController.text),
         driverTotalRides: _tryParseInt(_driverTotalRidesController.text),
         defaultEtaMinutes: _tryParseInt(_etaMinutesController.text),
@@ -170,32 +260,24 @@ class _DriverPageState extends State<DriverPage> {
         driverLng: currentPlace?.longitude,
         isAvailable: true,
       );
-      if (!mounted) {
-        return;
-      }
+      if (!mounted || silent) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Driver profile saved.')),
       );
     } on ClientException catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted || silent) return;
       final message = e.response['message'] as String? ??
           'Could not save driver profile. Check collection rules.';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
     } on Exception catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted || silent) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
       );
     } catch (_) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted || silent) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not save driver profile.')),
       );
@@ -214,6 +296,7 @@ class _DriverPageState extends State<DriverPage> {
       final results = await Future.wait<List<TowRequest>>([
         _pocketBaseService.getPendingTowRequests(),
         _pocketBaseService.getDriverActiveRequests(driverName),
+        _pocketBaseService.getDriverServiceHistory(driverName),
       ]);
 
       if (!mounted) {
@@ -221,11 +304,15 @@ class _DriverPageState extends State<DriverPage> {
       }
 
       setState(() {
-        _pendingRequests = results[0];
+        _pendingRequests = results[0]
+            .where((item) => !_declinedRequestIds.contains(item.id))
+            .toList(growable: false);
         _myActiveRequests = results[1];
+        _myHistoryRequests = results[2];
         _isLoading = false;
       });
       _syncFocusedRequestMap();
+      _loadDriverRatings();
     } catch (_) {
       if (!mounted) {
         return;
@@ -517,6 +604,7 @@ class _DriverPageState extends State<DriverPage> {
         licensePlate: request.licensePlate?.trim().isNotEmpty == true
             ? request.licensePlate
             : _licensePlateController.text.trim(),
+        driverPhone: _resolveOwnPhone(),
         driverRating: driverRating,
         driverTotalRides: driverTotalRides,
         etaMinutes: etaMinutes,
@@ -555,6 +643,46 @@ class _DriverPageState extends State<DriverPage> {
     }
   }
 
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'pending':
+        return const Color(0xFF6B7280);
+      case 'assigned':
+        return const Color(0xFF2563EB);
+      case 'en_route':
+        return const Color(0xFFF59E0B);
+      case 'completed':
+        return const Color(0xFF16A34A);
+      case 'cancelled':
+        return const Color(0xFFDC2626);
+      case 'cancel_pending':
+        return const Color(0xFFB45309);
+      default:
+        return _kDriverYellow;
+    }
+  }
+
+  Widget _coloredStatusPill(
+    BuildContext context,
+    String status,
+    String label,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: _statusColor(status),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+
   String _statusLabel(String status, AppStrings strings) {
     switch (status) {
       case 'pending':
@@ -570,6 +698,24 @@ class _DriverPageState extends State<DriverPage> {
       default:
         return status;
     }
+  }
+
+  void _openFullscreenMap(TowRequest? focused, String? subline) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _FullscreenMapPage(
+          pickup: _focusedPickupPlace,
+          destination: _focusedDestinationPlace,
+          driver: _driverLivePlace,
+          routePoints: _focusedRouteInfo?.points ?? const [],
+          headline: focused == null
+              ? 'Your live position'
+              : 'Customer pickup -> destination',
+          subline: subline,
+        ),
+      ),
+    );
   }
 
   void _openTracking(TowRequest request) {
@@ -707,13 +853,64 @@ class _DriverPageState extends State<DriverPage> {
                   ),
                 ),
               ),
+            const SizedBox(height: 16),
+            _buildSectionHeader(
+              context,
+              title: 'Service History',
+              count: _myHistoryRequests.length,
+            ),
+            const SizedBox(height: 10),
+            if (_isLoading)
+              const SizedBox.shrink()
+            else if (_myHistoryRequests.isEmpty)
+              _buildEmptyCard(
+                context,
+                message: 'No completed or cancelled jobs yet.',
+              )
+            else
+              ..._myHistoryRequests.map(
+                (request) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _buildHistoryCard(
+                    context,
+                    request: request,
+                    strings: strings,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 16),
+            _buildRatingsCard(context),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDriverProfileCard(BuildContext context) {
+  Widget _buildHistoryCard(
+    BuildContext context, {
+    required TowRequest request,
+    required AppStrings strings,
+  }) {
+    final fareText = request.totalFare > 0
+        ? '${request.totalFare.toStringAsFixed(3)} BHD'
+        : '--';
+    final distanceText = request.distanceKm != null
+        ? '${request.distanceKm!.toStringAsFixed(1)} km'
+        : '--';
+    final etaText =
+        request.etaMinutes != null ? '${request.etaMinutes} min' : '--';
+    final completedDate =
+        '${request.updated.year}-${request.updated.month.toString().padLeft(2, '0')}-${request.updated.day.toString().padLeft(2, '0')}';
+
+    final photos = <(String label, String fileName)>[
+      if (request.pickupPhoto != null) ('Pickup', request.pickupPhoto!),
+      if (request.dropoffPhoto != null) ('Dropoff', request.dropoffPhoto!),
+      ...request.damagePhotos
+          .asMap()
+          .entries
+          .map((e) => ('Damage ${e.key + 1}', e.value)),
+    ];
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -724,117 +921,730 @@ class _DriverPageState extends State<DriverPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Driver Defaults',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  request.pickupLocation,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
+              ),
+              _coloredStatusPill(
+                context,
+                request.status,
+                _statusLabel(request.status, strings),
+              ),
+            ],
           ),
           const SizedBox(height: 4),
           Text(
-            'These values are written to tow_requests when you accept or update a job.',
+            request.destination,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: _mutedColor(context)),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _metricTile(
+                  context,
+                  title: 'date',
+                  value: completedDate,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _metricTile(
+                  context,
+                  title: 'distance',
+                  value: distanceText,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _metricTile(
+                  context,
+                  title: 'fare',
+                  value: fareText,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _metricTile(
+                  context,
+                  title: 'vehicle',
+                  value: request.vehicleType.isEmpty
+                      ? '--'
+                      : request.vehicleType,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _metricTile(
+                  context,
+                  title: 'plate',
+                  value: request.licensePlate ?? '--',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _metricTile(
+                  context,
+                  title: 'eta',
+                  value: etaText,
+                ),
+              ),
+            ],
+          ),
+          if (request.details.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Details: ${request.details}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          if (photos.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Photos',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: _mutedColor(context),
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 88,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: photos.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (_, i) {
+                  final photo = photos[i];
+                  return _historyPhotoTile(
+                    context,
+                    label: photo.$1,
+                    url: _pocketBaseService.towRequestFileUrl(
+                      request.id,
+                      photo.$2,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+          if (request.rated) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.star, size: 16, color: Colors.amber),
+                const SizedBox(width: 4),
+                Text(
+                  'Rated by customer',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: _mutedColor(context),
+                      ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _historyPhotoTile(
+    BuildContext context, {
+    required String label,
+    required String url,
+  }) {
+    return GestureDetector(
+      onTap: url.isEmpty ? null : () => _openPhotoViewer(context, url, label),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            Container(
+              width: 88,
+              height: 88,
+              color: _isDark(context)
+                  ? const Color(0xFF101827)
+                  : const Color(0xFFEFF1F5),
+              child: url.isEmpty
+                  ? Icon(Icons.image_not_supported,
+                      color: _mutedColor(context))
+                  : Image.network(
+                      url,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Icon(
+                        Icons.broken_image_outlined,
+                        color: _mutedColor(context),
+                      ),
+                      loadingBuilder: (_, child, progress) {
+                        if (progress == null) return child;
+                        return const Center(
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                color: Colors.black.withValues(alpha: 0.55),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openPhotoViewer(BuildContext context, String url, String title) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text(title)),
+          backgroundColor: Colors.black,
+          body: Center(
+            child: InteractiveViewer(
+              child: Image.network(
+                url,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image_outlined,
+                  color: Colors.white,
+                  size: 56,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRatingsCard(BuildContext context) {
+    final hasRatings = _myRatings.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _cardColor(context),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _borderColor(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.star, color: Colors.amber, size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'My Ratings',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+              Text(
+                hasRatings
+                    ? '${_myAverageRating.toStringAsFixed(1)} (${_myRatings.length})'
+                    : '--',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Stars and feedback left by customers after completed jobs.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: _mutedColor(context),
                 ),
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _driverNameController,
-            decoration: const InputDecoration(
-              labelText: 'driver_name',
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (_) => _loadRequests(silent: true),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _licensePlateController,
-                  decoration: const InputDecoration(
-                    labelText: 'license_plate',
-                    border: OutlineInputBorder(),
+          if (!hasRatings)
+            _buildEmptyCard(
+              context,
+              message: 'No ratings received yet.',
+            )
+          else
+            ..._myRatings.take(10).map((rating) {
+              final stars = rating.getIntValue('stars');
+              final comment = rating.getStringValue('comment').trim();
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: _isDark(context)
+                        ? _kDriverNavy
+                        : const Color(0xFFF7F7FB),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _borderColor(context)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: List.generate(5, (i) {
+                          return Icon(
+                            i < stars ? Icons.star : Icons.star_border,
+                            color: Colors.amber,
+                            size: 16,
+                          );
+                        }),
+                      ),
+                      if (comment.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          comment,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              ),
-              const SizedBox(width: 10),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDriverProfileCard(BuildContext context) {
+    final plate = _licensePlateController.text.trim();
+    final hasPlate = plate.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _cardColor(context),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _borderColor(context)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.directions_car_filled,
+                  color: _kDriverYellow, size: 22),
+              const SizedBox(width: 8),
               Expanded(
-                child: TextField(
-                  controller: _driverRatingController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
-                    labelText: 'driver_rating',
-                    border: OutlineInputBorder(),
-                  ),
+                child: Text(
+                  'Vehicle Plate',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 4),
+          Text(
+            'Snap car plate. OCR fills license_plate automatically.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _mutedColor(context),
+                ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: hasPlate
+                  ? _kDriverYellow.withValues(alpha: 0.16)
+                  : (_isDark(context)
+                      ? _kDriverNavy
+                      : const Color(0xFFF7F7FB)),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: hasPlate ? _kDriverYellow : _borderColor(context),
+                width: hasPlate ? 1.4 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  hasPlate
+                      ? Icons.confirmation_number
+                      : Icons.confirmation_number_outlined,
+                  color: hasPlate ? _kDriverYellow : _mutedColor(context),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    hasPlate ? plate : 'No plate scanned yet',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
+                          color: hasPlate
+                              ? (_isDark(context)
+                                  ? Colors.white
+                                  : _kDriverNavy)
+                              : _mutedColor(context),
+                        ),
+                  ),
+                ),
+                if (hasPlate)
+                  IconButton(
+                    tooltip: 'Clear plate',
+                    icon: const Icon(Icons.close),
+                    onPressed: _isScanningPlate || _isSaving
+                        ? null
+                        : () async {
+                            setState(() {
+                              _licensePlateController.text = '';
+                            });
+                            await _saveDriverProfile(silent: true);
+                          },
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: TextField(
-                  controller: _driverTotalRidesController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'driver_total_rides',
-                    border: OutlineInputBorder(),
+                child: FilledButton.icon(
+                  onPressed:
+                      _isScanningPlate || _isSaving ? null : _scanPlate,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _kDriverYellow,
+                    foregroundColor: _kDriverNavy,
                   ),
+                  icon: _isScanningPlate
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: _kDriverNavy,
+                          ),
+                        )
+                      : const Icon(Icons.camera_alt_outlined),
+                  label: Text(
+                      _isScanningPlate ? 'Scanning...' : 'Scan Car Plate'),
                 ),
               ),
               const SizedBox(width: 10),
-              Expanded(
-                child: TextField(
-                  controller: _etaMinutesController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'eta_minutes',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: TextField(
-                  controller: _distanceKmController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
-                    labelText: 'distance_km',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
+              IconButton(
+                tooltip: 'Pick from gallery',
+                onPressed: _isScanningPlate || _isSaving
+                    ? null
+                    : () => _scanPlate(fromGallery: true),
+                icon: const Icon(Icons.photo_library_outlined),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerRight,
-            child: OutlinedButton.icon(
-              onPressed: _isSaving
-                  ? null
-                  : () async {
-                      await _saveDriverProfile();
-                      await _loadRequests(silent: true);
-                    },
-              icon: const Icon(Icons.sync),
-              label: const Text('Save Driver Profile'),
+          const SizedBox(height: 12),
+          SwitchListTile.adaptive(
+            value: _isAvailable,
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              _isAvailable ? 'Online — accepting jobs' : 'Offline — paused',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
             ),
+            subtitle: Text(
+              _isAvailable
+                  ? 'Live location is shared with active customers.'
+                  : 'Background tracking stopped. Toggle on to receive jobs.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: _mutedColor(context),
+                  ),
+            ),
+            onChanged: (value) async {
+              setState(() => _isAvailable = value);
+              if (value) {
+                await DriverLocationService.instance.start();
+              } else {
+                await DriverLocationService.instance.stop();
+                try {
+                  final name = _driverNameController.text.trim();
+                  if (name.isNotEmpty) {
+                    await _pocketBaseService.upsertCurrentDriverProfile(
+                      driverName: name,
+                      isAvailable: false,
+                    );
+                  }
+                } catch (_) {}
+              }
+            },
           ),
         ],
       ),
     );
   }
 
+  Future<void> _scanPlate({bool fromGallery = false}) async {
+    if (_isScanningPlate) return;
+    setState(() {
+      _isScanningPlate = true;
+    });
+
+    TextRecognizer? recognizer;
+    try {
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source: fromGallery ? ImageSource.gallery : ImageSource.camera,
+        imageQuality: 92,
+        maxWidth: 1920,
+      );
+      if (picked == null) {
+        if (mounted) setState(() => _isScanningPlate = false);
+        return;
+      }
+
+      recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final result =
+          await recognizer.processImage(InputImage.fromFilePath(picked.path));
+
+      final plate = _extractPlateFromText(result.text);
+      if (!mounted) return;
+
+      if (plate.isEmpty) {
+        if (!mounted) return;
+        setState(() => _isScanningPlate = false);
+        final manual = await _confirmPlate(initial: '', detected: false);
+        if (manual == null || manual.isEmpty) return;
+        setState(() {
+          _licensePlateController.text = manual;
+        });
+        await _saveDriverProfile(silent: true);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Plate saved: $manual')),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() => _isScanningPlate = false);
+      final confirmed = await _confirmPlate(initial: plate, detected: true);
+      if (confirmed == null || confirmed.isEmpty) return;
+      setState(() {
+        _licensePlateController.text = confirmed;
+      });
+      await _saveDriverProfile(silent: true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Plate saved: $confirmed')),
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Camera error: ${e.message ?? e.code}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Plate scan failed: $e')),
+      );
+    } finally {
+      await recognizer?.close();
+      if (mounted) {
+        setState(() => _isScanningPlate = false);
+      }
+    }
+  }
+
+  Future<String?> _confirmPlate({
+    required String initial,
+    required bool detected,
+  }) async {
+    final controller = TextEditingController(text: initial);
+    final formKey = GlobalKey<FormState>();
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(detected ? 'Confirm plate' : 'Enter plate manually'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                detected
+                    ? 'Edit if OCR misread it. Plates usually contain letters and digits.'
+                    : 'OCR could not detect a plate. Type your truck plate.',
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: controller,
+                autofocus: true,
+                textCapitalization: TextCapitalization.characters,
+                maxLength: 12,
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9 \-]')),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'License plate',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  final v = (value ?? '').trim().toUpperCase();
+                  if (v.length < 3) return 'Too short';
+                  if (RegExp(r'^\d{8}$').hasMatch(v)) {
+                    return 'Looks like a phone number, not a plate';
+                  }
+                  if (!RegExp(r'^[A-Z0-9 \-]+$').hasMatch(v)) {
+                    return 'Use letters, digits, space or dash only';
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Cancel'),
+          ),
+          if (detected)
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop('__rescan__'),
+              child: const Text('Re-scan'),
+            ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() != true) return;
+              Navigator.of(ctx).pop(controller.text.trim().toUpperCase());
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == '__rescan__') {
+      await _scanPlate();
+      return null;
+    }
+    return result;
+  }
+
+  String _extractPlateFromText(String raw) {
+    if (raw.trim().isEmpty) return '';
+    final tokens = raw
+        .toUpperCase()
+        .replaceAll(RegExp(r'[^A-Z0-9\s\-]'), ' ')
+        .split(RegExp(r'\s+'))
+        .map((t) => t.replaceAll('-', '').trim())
+        .where((t) => t.length >= 3 && t.length <= 10)
+        .where((t) => RegExp(r'\d').hasMatch(t))
+        .where((t) => RegExp(r'^[A-Z0-9]+$').hasMatch(t))
+        .toList();
+    if (tokens.isEmpty) return '';
+
+    int score(String t) {
+      final digits = RegExp(r'\d').allMatches(t).length;
+      final letters = RegExp(r'[A-Z]').allMatches(t).length;
+      return digits * 2 + letters + t.length;
+    }
+
+    tokens.sort((a, b) => score(b).compareTo(score(a)));
+    return tokens.first;
+  }
+
+  Future<void> _refreshDriverLocation() async {
+    try {
+      final place = await LocationService.tryGetCurrentPlaceSilently();
+      if (!mounted || place == null) return;
+      setState(() {
+        _driverLivePlace = place;
+      });
+      final driverName = _driverNameController.text.trim();
+      if (driverName.isEmpty) return;
+      try {
+        await _pocketBaseService.upsertCurrentDriverProfile(
+          driverName: driverName,
+          driverPhone: _resolveOwnPhone(),
+          driverLat: place.latitude,
+          driverLng: place.longitude,
+          isAvailable: true,
+        );
+      } catch (_) {
+        // non-fatal: profile collection or rules may block writes
+      }
+      try {
+        await _pocketBaseService.pushDriverLocationToActiveRequests(
+          latitude: place.latitude,
+          longitude: place.longitude,
+          driverName: driverName,
+        );
+      } catch (_) {
+        // non-fatal: keeps user marker stale but does not break the app
+      }
+    } catch (_) {
+      // location may be temporarily unavailable; ignore
+    }
+  }
+
+  Future<void> _loadDriverRatings() async {
+    final userId = _pocketBaseService.currentUserRecord?.id;
+    if (userId == null || userId.isEmpty) {
+      return;
+    }
+    try {
+      final results = await Future.wait<dynamic>([
+        _pocketBaseService.getRatingsForDriver(userId, limit: 50),
+        _pocketBaseService.getDriverAverageRating(userId),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _myRatings = results[0] as List<RecordModel>;
+        _myAverageRating = results[1] as double;
+      });
+    } catch (_) {
+      // ratings collection may not exist yet; keep old state
+    }
+  }
+
   Widget _buildLiveMapCard(BuildContext context, AppStrings strings) {
     final focused = _focusedRequest;
+    final hasDriverLoc = _driverLivePlace != null;
     final mapSubline = _isLoadingMap
         ? 'Loading customer location...'
         : (focused == null
-            ? 'No pending or active request to display.'
+            ? (hasDriverLoc
+                ? 'You are on the map. Awaiting requests.'
+                : 'No pending or active request to display.')
             : '${_statusLabel(focused.status, strings)} | ${focused.pickupLocation}');
 
     return Container(
@@ -851,11 +1661,16 @@ class _DriverPageState extends State<DriverPage> {
             children: [
               Expanded(
                 child: Text(
-                  'Customer Location Map',
+                  'Live Tracking',
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                 ),
+              ),
+              IconButton(
+                tooltip: 'Refresh my location',
+                icon: const Icon(Icons.my_location, size: 20),
+                onPressed: _refreshDriverLocation,
               ),
               if (focused != null)
                 Text(
@@ -869,19 +1684,60 @@ class _DriverPageState extends State<DriverPage> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Tap any request card below to focus this map on that customer.',
+            'You (truck), customer pickup, and destination on one map. Tap a request to focus.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: _mutedColor(context),
                 ),
           ),
           const SizedBox(height: 12),
-          BarqLiveMap(
-            height: 240,
-            pickup: _focusedPickupPlace,
-            destination: _focusedDestinationPlace,
-            routePoints: _focusedRouteInfo?.points ?? const [],
-            headline: 'Customer pickup location',
-            subline: mapSubline,
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Stack(
+              children: [
+                BarqLiveMap(
+                  height: 280,
+                  pickup: _focusedPickupPlace,
+                  destination: _focusedDestinationPlace,
+                  driver: _driverLivePlace,
+                  routePoints: _focusedRouteInfo?.points ?? const [],
+                  headline: focused == null
+                      ? 'Your live position'
+                      : 'Customer pickup -> destination',
+                  subline: mapSubline,
+                ),
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      tooltip: 'Fullscreen map',
+                      icon: const Icon(Icons.fullscreen, color: Colors.white),
+                      onPressed: () => _openFullscreenMap(focused, mapSubline),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _legendDot(const Color(0xFFF59E0B)),
+              const SizedBox(width: 4),
+              Text('You', style: Theme.of(context).textTheme.labelSmall),
+              const SizedBox(width: 12),
+              _legendDot(const Color(0xFF16A34A)),
+              const SizedBox(width: 4),
+              Text('Customer',
+                  style: Theme.of(context).textTheme.labelSmall),
+              const SizedBox(width: 12),
+              _legendDot(const Color(0xFFDC2626)),
+              const SizedBox(width: 4),
+              Text('Destination',
+                  style: Theme.of(context).textTheme.labelSmall),
+            ],
           ),
           if (_isLoadingMap)
             const Padding(
@@ -1028,77 +1884,30 @@ class _DriverPageState extends State<DriverPage> {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: _kDriverYellow,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      statusLabel,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: _kDriverNavy,
-                            fontWeight: FontWeight.w700,
-                          ),
-                    ),
-                  ),
+                  _coloredStatusPill(context, request.status, statusLabel),
                 ],
               ),
               const SizedBox(height: 10),
-              Text(
-                'vehicle_type: ${request.vehicleType}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'service_timing: ${request.serviceTiming}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'driver_name: ${request.driverName ?? '--'}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'license_plate: ${request.licensePlate ?? '--'}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'driver_rating: ${request.driverRating?.toStringAsFixed(1) ?? '--'}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'driver_total_rides: ${request.driverTotalRides?.toString() ?? '--'}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'base_fare: ${request.baseFare?.toStringAsFixed(3) ?? '--'}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'distance_fare: ${request.distanceFare?.toStringAsFixed(3) ?? '--'}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              if (request.details.trim().isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  'details: ${request.details}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
+              _kvLine(context, Icons.local_shipping_outlined, 'Vehicle',
+                  request.vehicleType),
+              _kvLine(context, Icons.schedule_outlined, 'Timing',
+                  request.serviceTiming),
+              if ((request.driverName ?? '').isNotEmpty)
+                _kvLine(context, Icons.person_outline, 'Driver',
+                    request.driverName!),
+              if ((request.licensePlate ?? '').isNotEmpty)
+                _kvLine(context, Icons.confirmation_number_outlined, 'Plate',
+                    request.licensePlate!),
+              if (request.details.trim().isNotEmpty)
+                _kvLine(context, Icons.notes_outlined, 'Notes',
+                    request.details.trim()),
               const SizedBox(height: 12),
               Row(
                 children: [
                   Expanded(
                     child: _metricTile(
                       context,
-                      title: 'eta_minutes',
+                      title: 'ETA',
                       value: etaText,
                     ),
                   ),
@@ -1106,7 +1915,7 @@ class _DriverPageState extends State<DriverPage> {
                   Expanded(
                     child: _metricTile(
                       context,
-                      title: 'distance_km',
+                      title: 'Distance',
                       value: distanceText,
                     ),
                   ),
@@ -1114,7 +1923,7 @@ class _DriverPageState extends State<DriverPage> {
                   Expanded(
                     child: _metricTile(
                       context,
-                      title: 'total_fare',
+                      title: 'Fare',
                       value: fareText,
                     ),
                   ),
@@ -1139,6 +1948,28 @@ class _DriverPageState extends State<DriverPage> {
                   ),
                 ],
               ),
+              if (request.status == 'assigned' ||
+                  request.status == 'en_route') ...[
+                const SizedBox(height: 6),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: _isSaving ? null : () => _promptCancel(request),
+                    icon: const Icon(Icons.cancel_outlined,
+                        color: Colors.red, size: 18),
+                    label: const Text(
+                      'Cancel job',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                ),
+              ],
+              if (request.status == 'assigned' ||
+                  request.status == 'en_route' ||
+                  request.status == 'completed') ...[
+                const SizedBox(height: 10),
+                _buildPhotoStrip(request),
+              ],
             ],
           ),
         ),
@@ -1146,23 +1977,153 @@ class _DriverPageState extends State<DriverPage> {
     );
   }
 
+  Widget _buildPhotoStrip(TowRequest request) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        _photoChip(
+          label: request.pickupPhoto == null ? 'Pickup photo' : 'Pickup ✓',
+          uploaded: request.pickupPhoto != null,
+          onTap: () => _capturePhoto(request, 'pickup_photo'),
+        ),
+        _photoChip(
+          label: request.dropoffPhoto == null ? 'Dropoff photo' : 'Dropoff ✓',
+          uploaded: request.dropoffPhoto != null,
+          onTap: () => _capturePhoto(request, 'dropoff_photo'),
+        ),
+        _photoChip(
+          label: 'Damage (${request.damagePhotos.length}/5)',
+          uploaded: request.damagePhotos.isNotEmpty,
+          onTap: request.damagePhotos.length >= 5
+              ? null
+              : () => _capturePhoto(request, 'damage_photos'),
+        ),
+      ],
+    );
+  }
+
+  Widget _kvLine(
+    BuildContext context,
+    IconData icon,
+    String label,
+    String value,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: _mutedColor(context)),
+          const SizedBox(width: 8),
+          Text(
+            '$label: ',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _mutedColor(context),
+                ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _photoChip({
+    required String label,
+    required bool uploaded,
+    VoidCallback? onTap,
+  }) {
+    return ActionChip(
+      avatar: Icon(
+        uploaded ? Icons.check_circle : Icons.add_a_photo_outlined,
+        size: 18,
+        color: uploaded ? Colors.green : null,
+      ),
+      label: Text(label),
+      onPressed: onTap,
+    );
+  }
+
+  Future<void> _capturePhoto(TowRequest request, String fieldName) async {
+    if (_isSaving) return;
+    try {
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+        maxWidth: 1600,
+      );
+      if (picked == null) return;
+      setState(() => _isSaving = true);
+
+      await _pocketBaseService.uploadTowRequestPhoto(
+        requestId: request.id,
+        fieldName: fieldName,
+        filePath: picked.path,
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$fieldName uploaded')),
+      );
+      await _loadRequests(silent: true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Upload failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
   Widget _buildPrimaryAction({
     required TowRequest request,
     required bool isPending,
   }) {
     if (isPending) {
-      return FilledButton.icon(
-        onPressed: _isSaving ? null : () => _acceptRequest(request),
-        icon: const Icon(Icons.check_circle_outline),
-        label: const Text('Accept'),
+      return Row(
+        children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _isSaving ? null : () => _declineRequest(request),
+              icon: const Icon(Icons.close),
+              label: const Text('Decline'),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: FilledButton.icon(
+              onPressed: _isSaving ? null : () => _acceptRequest(request),
+              icon: const Icon(Icons.check_circle_outline),
+              label: const Text('Accept'),
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (request.status == 'cancel_pending') {
+      return OutlinedButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.hourglass_top),
+        label: const Text('AI reviewing...'),
       );
     }
 
     if (request.status == 'assigned') {
       return FilledButton.icon(
         onPressed: _isSaving ? null : () => _startTrip(request),
-        icon: const Icon(Icons.directions_car_filled_outlined),
-        label: const Text('Start Trip'),
+        icon: const Icon(Icons.directions_car_filled_outlined, size: 18),
+        label: const Text('Start Trip', overflow: TextOverflow.ellipsis),
       );
     }
 
@@ -1172,8 +2133,134 @@ class _DriverPageState extends State<DriverPage> {
         backgroundColor: _kDriverYellow,
         foregroundColor: _kDriverNavy,
       ),
-      icon: const Icon(Icons.task_alt),
-      label: const Text('Complete'),
+      icon: const Icon(Icons.task_alt, size: 18),
+      label: const Text('Complete', overflow: TextOverflow.ellipsis),
+    );
+  }
+
+  Future<void> _promptCancel(TowRequest request) async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel job'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Why are you cancelling? AI will review the reason. '
+              'Frivolous cancellations may impact your account.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 4,
+              maxLength: 500,
+              decoration: const InputDecoration(
+                hintText: 'e.g. Vehicle breakdown on the way',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(null),
+            child: const Text('Keep job'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () =>
+                Navigator.of(ctx).pop(controller.text.trim()),
+            child: const Text('Submit cancel'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (reason == null || reason.length < 5) return;
+    await _submitCancellation(request, reason);
+  }
+
+  Future<void> _submitCancellation(TowRequest request, String reason) async {
+    setState(() {
+      _isSaving = true;
+    });
+    final previousStatus = request.status;
+    try {
+      await _pocketBaseService.requestDriverCancellation(
+        requestId: request.id,
+        reason: reason,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cancellation sent. AI reviewing...')),
+      );
+      await _loadRequests(silent: true);
+      _runCancellationAi(request, reason, previousStatus);
+    } on ClientException catch (e) {
+      if (!mounted) return;
+      final message =
+          e.response['message'] as String? ?? 'Could not request cancellation.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not request cancellation: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _runCancellationAi(
+    TowRequest request,
+    String reason,
+    String previousStatus,
+  ) async {
+    try {
+      final verdict =
+          await ModerationAiService.instance.reviewDriverCancellation(
+        reason: reason,
+        pickupLocation: request.pickupLocation,
+        destination: request.destination,
+        currentStatus: previousStatus,
+      );
+      await _pocketBaseService.applyDriverCancellationVerdict(
+        requestId: request.id,
+        decision: verdict.decision,
+        reasoning: verdict.reasoning,
+        confidence: verdict.confidence,
+        previousStatus: previousStatus,
+      );
+      if (!mounted) return;
+      final label = switch (verdict.decision) {
+        'approved' => 'AI approved cancellation.',
+        'rejected' => 'AI rejected cancellation. Job restored.',
+        _ => 'AI flagged for human review.',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(label)));
+      await _loadRequests(silent: true);
+    } catch (_) {
+      // best-effort: an admin can finalise manually if AI unavailable
+    }
+  }
+
+  Widget _legendDot(Color color) {
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+      ),
     );
   }
 
@@ -1208,6 +2295,49 @@ class _DriverPageState extends State<DriverPage> {
                 ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+class _FullscreenMapPage extends StatelessWidget {
+  const _FullscreenMapPage({
+    this.pickup,
+    this.destination,
+    this.driver,
+    this.routePoints = const <LatLng>[],
+    this.headline,
+    this.subline,
+  });
+
+  final PlaceResult? pickup;
+  final PlaceResult? destination;
+  final PlaceResult? driver;
+  final List<LatLng> routePoints;
+  final String? headline;
+  final String? subline;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Live map'),
+        leading: IconButton(
+          icon: const Icon(Icons.fullscreen_exit),
+          onPressed: () => Navigator.of(context).pop(),
+          tooltip: 'Exit fullscreen',
+        ),
+      ),
+      body: BarqLiveMap(
+        height: size.height,
+        pickup: pickup,
+        destination: destination,
+        driver: driver,
+        routePoints: routePoints,
+        headline: headline,
+        subline: subline,
       ),
     );
   }

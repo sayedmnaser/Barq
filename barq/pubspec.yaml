@@ -15,11 +15,24 @@ dependencies:
   latlong2: ^0.9.1
   shared_preferences: ^2.3.0
   geolocator: ^11.1.0
+  image_picker: ^1.1.2
+  google_mlkit_text_recognition: ^0.15.0
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "lib/src/logo/file_00000000decc7246a92d743d9b9850f3.png"
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: "lib/src/logo/file_00000000decc7246a92d743d9b9850f3.png"
+  remove_alpha_ios: true
+  background_color_ios: "#000000"
 
 flutter:
   uses-material-design: true

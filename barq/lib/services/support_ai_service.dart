@@ -2,67 +2,169 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:pocketbase/pocketbase.dart';
 
 import 'app_config.dart';
+import 'pocketbase_service.dart';
+
+class SupportReply {
+  const SupportReply({required this.text, this.qaId});
+
+  final String text;
+  final String? qaId;
+}
 
 class SupportAiService {
   SupportAiService._();
 
   static final SupportAiService instance = SupportAiService._();
 
-  Future<String> generateReply({
+  Future<SupportReply> generateReply({
     required String userMessage,
     required List<Map<String, String>> history,
     required bool isArabic,
   }) async {
-    final prompt = isArabic
+    final language = isArabic ? 'ar' : 'en';
+    final basePrompt = isArabic
         ? 'أنت مساعد دعم داخل تطبيق سحب سيارات. أجب بإيجاز وبخطوات عملية واضحة.'
         : 'You are Barq in-app support for towing services only. Answer only app topics like tow requests, drivers, map, pricing, tracking, account, settings, payments, and permissions. If a question is unrelated to the app, politely refuse and redirect to an app-support topic. Keep replies short and actionable.';
 
     if (!_isAppRelatedMessage(userMessage)) {
-      return _offTopicReply(isArabic);
+      return SupportReply(text: _offTopicReply(isArabic));
     }
 
-    final groqKey = AppConfig.groqApiKey.trim();
-    if (groqKey.isNotEmpty) {
-      final groqReply = await _tryGroqReply(
-        apiKey: groqKey,
-        userMessage: userMessage,
-        history: history,
-        prompt: prompt,
-      );
-      if (groqReply != null && groqReply.trim().isNotEmpty) {
-        return groqReply.trim();
-      }
-    }
+    final examples = await _loadHelpfulExamples(
+      language: language,
+      userMessage: userMessage,
+    );
+    final prompt = examples.isEmpty
+        ? basePrompt
+        : '$basePrompt\n\n${_examplesBlock(examples, isArabic)}';
 
-    final openRouterKey = AppConfig.openRouterApiKey.trim();
-    if (openRouterKey.isNotEmpty) {
-      final openRouterReply = await _tryOpenRouterReply(
-        apiKey: openRouterKey,
-        userMessage: userMessage,
-        history: history,
-        prompt: prompt,
-      );
-      if (openRouterReply != null && openRouterReply.trim().isNotEmpty) {
-        return openRouterReply.trim();
-      }
-    }
+    String? answer;
 
     final geminiKey = AppConfig.geminiApiKey.trim();
     if (geminiKey.isNotEmpty) {
-      final geminiReply = await _tryGeminiReply(
+      final reply = await _tryGeminiReply(
         apiKey: geminiKey,
         userMessage: userMessage,
         history: history,
         prompt: prompt,
       );
-      if (geminiReply != null && geminiReply.trim().isNotEmpty) {
-        return geminiReply.trim();
+      if (reply != null && reply.trim().isNotEmpty) {
+        answer = reply.trim();
       }
     }
 
-    return _fallbackReply(userMessage, isArabic);
+    if (answer == null) {
+      final groqKey = AppConfig.groqApiKey.trim();
+      if (groqKey.isNotEmpty) {
+        final reply = await _tryGroqReply(
+          apiKey: groqKey,
+          userMessage: userMessage,
+          history: history,
+          prompt: prompt,
+        );
+        if (reply != null && reply.trim().isNotEmpty) {
+          answer = reply.trim();
+        }
+      }
+    }
+
+    if (answer == null) {
+      final openRouterKey = AppConfig.openRouterApiKey.trim();
+      if (openRouterKey.isNotEmpty) {
+        final reply = await _tryOpenRouterReply(
+          apiKey: openRouterKey,
+          userMessage: userMessage,
+          history: history,
+          prompt: prompt,
+        );
+        if (reply != null && reply.trim().isNotEmpty) {
+          answer = reply.trim();
+        }
+      }
+    }
+
+    answer ??= _fallbackReply(userMessage, isArabic);
+    final qaId = await _persistQa(
+      question: userMessage,
+      answer: answer,
+      language: language,
+    );
+    return SupportReply(text: answer, qaId: qaId);
+  }
+
+  Future<void> markHelpful({required String qaId, required int vote}) async {
+    if (qaId.isEmpty) return;
+    try {
+      await PocketBaseService.instance
+          .markSupportQaHelpful(id: qaId, vote: vote);
+    } catch (_) {
+      // best-effort
+    }
+  }
+
+  Future<List<RecordModel>> _loadHelpfulExamples({
+    required String language,
+    required String userMessage,
+  }) async {
+    try {
+      final keywords = _extractKeywords(userMessage);
+      return await PocketBaseService.instance.getHelpfulSupportExamples(
+        language: language,
+        keywords: keywords,
+        limit: 3,
+      );
+    } catch (_) {
+      return const <RecordModel>[];
+    }
+  }
+
+  String _examplesBlock(List<RecordModel> examples, bool isArabic) {
+    final header = isArabic
+        ? 'استرشد بالإجابات السابقة التي قيّمها العملاء كمفيدة:'
+        : 'Use these past answers that customers rated as helpful as guidance:';
+    final body = examples.map((e) {
+      final q = e.getStringValue('question').trim();
+      final a = e.getStringValue('answer').trim();
+      return '- Q: $q\n  A: $a';
+    }).join('\n');
+    final closer = isArabic
+        ? 'حافظ على نفس الأسلوب القصير والمباشر.'
+        : 'Match that concise, action-oriented style.';
+    return '$header\n$body\n$closer';
+  }
+
+  List<String> _extractKeywords(String message) {
+    final cleaned = message
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^\p{L}\p{N}\s]', unicode: true), ' ');
+    final tokens = cleaned
+        .split(RegExp(r'\s+'))
+        .where((t) => t.length >= 4)
+        .toSet()
+        .toList();
+    return tokens.take(6).toList();
+  }
+
+  Future<String?> _persistQa({
+    required String question,
+    required String answer,
+    required String language,
+  }) async {
+    try {
+      final keywords = _extractKeywords(question);
+      final record = await PocketBaseService.instance.saveSupportQa(
+        question: question,
+        answer: answer,
+        language: language,
+        tags: keywords.join(' '),
+      );
+      return record?.id;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<String?> _tryOpenRouterReply({

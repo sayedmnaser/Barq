@@ -21,9 +21,14 @@ class GetEstimatePage extends StatefulWidget {
 }
 
 class _GetEstimatePageState extends State<GetEstimatePage> {
-  static const double _minimumFareBhd = 5.0;
-  static const double _maximumDayFareBhd = 20.0;
   static const double _nightSurchargeBhd = 5.0;
+
+  static double tierFareForDistance(double km) {
+    if (km <= 0) return 10.0;
+    if (km <= 15) return 10.0;
+    if (km <= 20) return 15.0;
+    return 20.0;
+  }
 
   final TextEditingController _pickupController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
@@ -77,33 +82,13 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
     }
   }
 
-  double get _baseFare => _minimumFareBhd;
-
-  double get _perKmRate {
-    switch (_vehicleType) {
-      case EstimateVehicleType.sedan:
-        return 0.75;
-      case EstimateVehicleType.suv:
-        return 0.95;
-      case EstimateVehicleType.motorcycle:
-        return 0.60;
-      case EstimateVehicleType.flatbed:
-        return 1.20;
-    }
-  }
+  double get _baseFare => tierFareForDistance(_distanceKm);
 
   double get _distanceKm => _routeInfo?.distanceKm ?? 0;
-  double get _rawDistanceFare => _distanceKm * _perKmRate;
-  double get _distanceFare {
-    final cappedDistanceFare =
-        _rawDistanceFare.clamp(0.0, _maximumDayFareBhd - _minimumFareBhd);
-    return cappedDistanceFare.toDouble();
-  }
+  double get _distanceFare => 0.0;
 
   double get _serviceFee => 0.0;
-  double get _dayFare => (_baseFare + _distanceFare)
-      .clamp(_minimumFareBhd, _maximumDayFareBhd)
-      .toDouble();
+  double get _dayFare => _baseFare;
   double get _surcharge => _nightService ? _nightSurchargeBhd : 0;
   double get _total => _dayFare + _surcharge;
 

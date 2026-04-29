@@ -43,6 +43,12 @@
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Barq uses your location to set pickup points and improve tow tracking.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Barq uses the camera to scan vehicle license plates.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Barq uses photo library to pick license plate images for scanning.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Barq may save scanned plate images.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

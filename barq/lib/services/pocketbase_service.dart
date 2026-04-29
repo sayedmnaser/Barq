@@ -243,6 +243,7 @@ class PocketBaseService {
   Future<RecordModel> upsertCurrentDriverProfile({
     required String driverName,
     String? licensePlate,
+    String? driverPhone,
     double? driverRating,
     int? driverTotalRides,
     int? defaultEtaMinutes,
@@ -267,6 +268,8 @@ class PocketBaseService {
       'driver_name': normalizedDriverName,
       if (licensePlate != null && licensePlate.trim().isNotEmpty)
         'license_plate': licensePlate.trim(),
+      if (driverPhone != null && driverPhone.trim().isNotEmpty)
+        'driver_phone': driverPhone.trim(),
       if (driverRating != null) 'driver_rating': driverRating,
       if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
       if (defaultEtaMinutes != null) 'default_eta_minutes': defaultEtaMinutes,
@@ -607,9 +610,10 @@ class PocketBaseService {
         }
       }
     }
-
-    final message = (response['message'] as String?)?.toLowerCase() ?? '';
-    return fieldNames.any((field) => message.contains(field.toLowerCase()));
+    // No message-substring fallback: it caused false positives where an error
+    // about a sibling field (e.g. driver_rating) would match the shorter name
+    // (e.g. driver) and strip a valid field from the retry payload.
+    return false;
   }
 
   Future<List<TowRequest>> getActiveRequests() async {
@@ -651,10 +655,14 @@ class PocketBaseService {
       throw Exception('Driver role is required.');
     }
 
+    final selfId = _userId ?? '';
+    final selfFilter = selfId.isEmpty
+        ? ''
+        : ' && user != "${_escapeFilterValue(selfId)}"';
     final result = await _client.collection('tow_requests').getList(
           page: 1,
           perPage: 200,
-          filter: 'status = "pending"',
+          filter: 'status = "pending"$selfFilter',
           sort: 'created',
         );
 
@@ -683,20 +691,133 @@ class PocketBaseService {
     return result.items.map(TowRequest.fromRecord).toList(growable: false);
   }
 
+  Future<List<TowRequest>> getDriverServiceHistory(String driverName) async {
+    if (!isCurrentUserDriver) {
+      throw Exception('Driver role is required.');
+    }
+
+    final normalizedDriver = driverName.trim();
+    final userId = _userId ?? '';
+    if (normalizedDriver.isEmpty && userId.isEmpty) {
+      return const <TowRequest>[];
+    }
+
+    final filters = <String>[];
+    if (normalizedDriver.isNotEmpty) {
+      filters.add('driver_name = "${_escapeFilterValue(normalizedDriver)}"');
+    }
+    if (userId.isNotEmpty) {
+      filters.add('driver = "$userId"');
+    }
+    final driverFilter = filters.length == 1
+        ? filters.first
+        : '(${filters.join(' || ')})';
+
+    final result = await _client.collection('tow_requests').getList(
+          page: 1,
+          perPage: 200,
+          filter:
+              '$driverFilter && (status = "completed" || status = "cancelled")',
+          sort: '-updated',
+        );
+
+    return result.items.map(TowRequest.fromRecord).toList(growable: false);
+  }
+
+  /// Pushes the driver's live coordinates to every active tow_request currently
+  /// assigned to the signed-in driver. The user-facing Track Service screen
+  /// reads driver_lat/driver_lng from the tow_request, so this is what makes
+  /// the live driver marker appear on the customer map.
+  ///
+  /// Also self-heals the `driver` relation on rows that were accepted before
+  /// the relation could be persisted, by matching on `driver_name`.
+  Future<void> pushDriverLocationToActiveRequests({
+    required double latitude,
+    required double longitude,
+    String? driverName,
+  }) async {
+    if (!isCurrentUserDriver) {
+      return;
+    }
+    final userId = _userId;
+    if (userId == null) {
+      return;
+    }
+
+    final escapedUserId = _escapeFilterValue(userId);
+    final filters = <String>['driver = "$escapedUserId"'];
+    final normalizedDriverName = (driverName ?? currentUserName).trim();
+    if (normalizedDriverName.isNotEmpty) {
+      filters.add('driver_name = "${_escapeFilterValue(normalizedDriverName)}"');
+    }
+    final driverFilter = filters.length == 1
+        ? filters.first
+        : '(${filters.join(' || ')})';
+
+    List<RecordModel> records = const <RecordModel>[];
+    try {
+      final result = await _client.collection('tow_requests').getList(
+            page: 1,
+            perPage: 200,
+            filter:
+                '$driverFilter && (status = "assigned" || status = "en_route")',
+            sort: '-updated',
+          );
+      records = result.items;
+    } on ClientException {
+      records = const <RecordModel>[];
+    }
+
+    if (records.isEmpty) {
+      return;
+    }
+
+    for (final record in records) {
+      final body = <String, dynamic>{
+        'driver_lat': latitude,
+        'driver_lng': longitude,
+      };
+      // Heal missing relation so the customer-side filter & rules light up.
+      if (record.getStringValue('driver').trim().isEmpty) {
+        body['driver'] = userId;
+      }
+      try {
+        await _client.collection('tow_requests').update(record.id, body: body);
+      } on ClientException {
+        // Skip rows that reject the update; other rows can still succeed.
+      }
+    }
+  }
+
   Future<TowRequest> updateTowRequestAsDriver({
     required String requestId,
     String? status,
     String? driverName,
     String? licensePlate,
+    String? driverPhone,
     double? driverRating,
     int? driverTotalRides,
     double? distanceKm,
     int? etaMinutes,
     double? baseFare,
     double? distanceFare,
+    bool attachDriverUser = true,
   }) async {
     if (!isCurrentUserDriver) {
       throw Exception('Driver role is required.');
+    }
+
+    if (attachDriverUser && _userId != null) {
+      try {
+        final existing = await _client
+            .collection('tow_requests')
+            .getOne(requestId);
+        if (existing.getStringValue('user') == _userId) {
+          throw Exception('You cannot accept your own tow request.');
+        }
+      } on ClientException {
+        // If we cannot pre-check, fall through; server rules may still block it.
+      }
     }
 
     final body = <String, dynamic>{
@@ -705,12 +826,15 @@ class PocketBaseService {
         'driver_name': driverName.trim(),
       if (licensePlate != null && licensePlate.trim().isNotEmpty)
         'license_plate': licensePlate.trim(),
+      if (driverPhone != null && driverPhone.trim().isNotEmpty)
+        'driver_phone': driverPhone.trim(),
       if (driverRating != null) 'driver_rating': driverRating,
       if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
       if (distanceKm != null) 'distance_km': distanceKm,
       if (etaMinutes != null) 'eta_minutes': etaMinutes,
       if (baseFare != null) 'base_fare': baseFare,
       if (distanceFare != null) 'distance_fare': distanceFare,
+      if (attachDriverUser && _userId != null) 'driver': _userId,
     };
 
     if (body.isEmpty) {
@@ -718,10 +842,24 @@ class PocketBaseService {
       return TowRequest.fromRecord(record);
     }
 
-    final record = await _client.collection('tow_requests').update(
-          requestId,
-          body: body,
-        );
+    RecordModel record;
+    try {
+      record = await _client.collection('tow_requests').update(
+            requestId,
+            body: body,
+          );
+    } on ClientException catch (e) {
+      if (body.containsKey('driver') &&
+          _hasRejectedOptionalField(e, const ['driver'])) {
+        body.remove('driver');
+        record = await _client.collection('tow_requests').update(
+              requestId,
+              body: body,
+            );
+      } else {
+        rethrow;
+      }
+    }
     return TowRequest.fromRecord(record);
   }
 
@@ -738,6 +876,86 @@ class PocketBaseService {
     await _client.collection('tow_requests').update(id, body: {
       'status': 'cancelled',
     });
+  }
+
+  /// Driver requests to cancel an accepted job. Sets status to cancel_pending
+  /// and records the reason. The decision is finalised by AI in
+  /// [applyDriverCancellationVerdict].
+  Future<TowRequest> requestDriverCancellation({
+    required String requestId,
+    required String reason,
+  }) async {
+    if (!isCurrentUserDriver) {
+      throw Exception('Driver role is required.');
+    }
+    final trimmed = reason.trim();
+    if (trimmed.length < 5) {
+      throw ArgumentError('Cancellation reason is too short.');
+    }
+    final body = <String, dynamic>{
+      'status': 'cancel_pending',
+      'cancellation_reason': trimmed,
+    };
+    RecordModel record;
+    try {
+      record = await _client.collection('tow_requests').update(
+            requestId,
+            body: body,
+          );
+    } on ClientException catch (e) {
+      if (_hasRejectedOptionalField(e, const ['cancellation_reason'])) {
+        body.remove('cancellation_reason');
+        record = await _client.collection('tow_requests').update(
+              requestId,
+              body: body,
+            );
+      } else {
+        rethrow;
+      }
+    }
+    return TowRequest.fromRecord(record);
+  }
+
+  Future<TowRequest> applyDriverCancellationVerdict({
+    required String requestId,
+    required String decision,
+    required String reasoning,
+    required double confidence,
+    required String previousStatus,
+  }) async {
+    final normalisedPrev =
+        previousStatus.isNotEmpty ? previousStatus : 'en_route';
+    final body = <String, dynamic>{
+      'cancellation_verdict': reasoning,
+      'cancellation_decision': decision,
+      'cancellation_ai_confidence': confidence,
+      'status': switch (decision) {
+        'approved' => 'cancelled',
+        'rejected' => normalisedPrev,
+        _ => 'cancel_pending',
+      },
+    };
+
+    RecordModel record;
+    try {
+      record = await _client
+          .collection('tow_requests')
+          .update(requestId, body: body);
+    } on ClientException catch (e) {
+      if (_hasRejectedOptionalField(e, const [
+        'cancellation_verdict',
+        'cancellation_decision',
+        'cancellation_ai_confidence',
+      ])) {
+        body.removeWhere((k, _) => k.startsWith('cancellation_'));
+        record = await _client
+            .collection('tow_requests')
+            .update(requestId, body: body);
+      } else {
+        rethrow;
+      }
+    }
+    return TowRequest.fromRecord(record);
   }
 
   Future<({int totalRides, double totalSpent})> getUserStats() async {
@@ -805,5 +1023,462 @@ class PocketBaseService {
     } on SocketException {
       return false;
     }
+  }
+
+  // ---------------- photos on tow_requests ----------------
+
+  Future<TowRequest> uploadTowRequestPhoto({
+    required String requestId,
+    required String fieldName,
+    required String filePath,
+  }) async {
+    if (!const {'pickup_photo', 'dropoff_photo', 'damage_photos'}
+        .contains(fieldName)) {
+      throw ArgumentError('Invalid photo field: $fieldName');
+    }
+
+    final file = await http.MultipartFile.fromPath(fieldName, filePath);
+    final record = await _client.collection('tow_requests').update(
+      requestId,
+      files: <http.MultipartFile>[file],
+    );
+    return TowRequest.fromRecord(record);
+  }
+
+  String fileUrl(RecordModel record, String fileName) {
+    return _client.files.getUrl(record, fileName).toString();
+  }
+
+  String towRequestFileUrl(String recordId, String fileName) {
+    if (recordId.isEmpty || fileName.isEmpty) return '';
+    return '$serverUrl/api/files/tow_requests/$recordId/$fileName';
+  }
+
+  // ---------------- ratings ----------------
+
+  Future<RecordModel> createRating({
+    required String towRequestId,
+    required String driverUserId,
+    required int stars,
+    String? comment,
+  }) async {
+    final userId = _userId;
+    if (userId == null) throw Exception('User not authenticated');
+    if (stars < 1 || stars > 5) throw ArgumentError('stars 1..5');
+
+    final body = <String, dynamic>{
+      'user': userId,
+      'driver': driverUserId,
+      'tow_request': towRequestId,
+      'stars': stars,
+      if (comment != null && comment.trim().isNotEmpty)
+        'comment': comment.trim(),
+    };
+    final rating = await _client.collection('ratings').create(body: body);
+    await _client.collection('tow_requests').update(
+      towRequestId,
+      body: <String, dynamic>{'rated': true},
+    );
+    return rating;
+  }
+
+  Future<RecordModel?> getRatingForRequest(String towRequestId) async {
+    try {
+      final result = await _client.collection('ratings').getList(
+            page: 1,
+            perPage: 1,
+            filter: 'tow_request = "$towRequestId"',
+          );
+      return result.items.isEmpty ? null : result.items.first;
+    } on ClientException {
+      return null;
+    }
+  }
+
+  /// Resolves a driver's user-id by their stored display name. Falls back
+  /// across driver_profiles (preferred) then completed tow_requests so that
+  /// rows missing the `driver` relation can still be rated.
+  Future<String?> resolveDriverUserIdByName(String driverName) async {
+    final clean = driverName.trim();
+    if (clean.isEmpty) return null;
+    final escaped = _escapeFilterValue(clean);
+
+    try {
+      final result =
+          await _client.collection(_driverProfilesCollection).getList(
+                page: 1,
+                perPage: 1,
+                filter: 'driver_name = "$escaped"',
+                sort: '-updated',
+              );
+      if (result.items.isNotEmpty) {
+        final userId = result.items.first.getStringValue('user').trim();
+        if (userId.isNotEmpty) return userId;
+      }
+    } on ClientException {
+      // ignore and fall through to tow_requests lookup
+    }
+
+    try {
+      final result = await _client.collection('tow_requests').getList(
+            page: 1,
+            perPage: 1,
+            filter: 'driver_name = "$escaped" && driver != ""',
+            sort: '-updated',
+          );
+      if (result.items.isNotEmpty) {
+        final userId = result.items.first.getStringValue('driver').trim();
+        if (userId.isNotEmpty) return userId;
+      }
+    } on ClientException {
+      // ignore
+    }
+
+    return null;
+  }
+
+  /// Tries to fetch a callable phone number for a driver. Looks up the
+  /// driver_profiles row first, then falls back to the user record's
+  /// phoneNumber field (which sign-up stores in international form).
+  Future<String?> resolveDriverPhone({
+    String? driverUserId,
+    String? driverName,
+  }) async {
+    final cleanName = driverName?.trim() ?? '';
+    final cleanId = driverUserId?.trim() ?? '';
+    final filters = <String>[];
+    if (cleanId.isNotEmpty) {
+      filters.add('user = "${_escapeFilterValue(cleanId)}"');
+    }
+    if (cleanName.isNotEmpty) {
+      filters.add('driver_name = "${_escapeFilterValue(cleanName)}"');
+    }
+
+    if (filters.isNotEmpty) {
+      final filter = filters.length == 1
+          ? filters.first
+          : '(${filters.join(' || ')})';
+      try {
+        final result =
+            await _client.collection(_driverProfilesCollection).getList(
+                  page: 1,
+                  perPage: 1,
+                  filter: filter,
+                  sort: '-updated',
+                );
+        if (result.items.isNotEmpty) {
+          final phone = result.items.first.getStringValue('driver_phone').trim();
+          if (phone.isNotEmpty) return phone;
+          final userId = result.items.first.getStringValue('user').trim();
+          if (userId.isNotEmpty) {
+            final fallback = await _phoneFromUserRecord(userId);
+            if (fallback != null) return fallback;
+          }
+        }
+      } on ClientException {
+        // ignore and try direct user lookup
+      }
+    }
+
+    if (cleanId.isNotEmpty) {
+      final fallback = await _phoneFromUserRecord(cleanId);
+      if (fallback != null) return fallback;
+    }
+    return null;
+  }
+
+  Future<String?> _phoneFromUserRecord(String userId) async {
+    try {
+      final user = await _client.collection('users').getOne(userId);
+      final phone = user.getIntValue('phoneNumber');
+      if (phone > 0) return '+$phone';
+    } on ClientException {
+      // user may not be readable due to rules
+    }
+    return null;
+  }
+
+  Future<List<RecordModel>> getRatingsForDriver(
+    String driverUserId, {
+    int limit = 50,
+  }) async {
+    try {
+      final result = await _client.collection('ratings').getList(
+            page: 1,
+            perPage: limit,
+            filter: 'driver = "$driverUserId"',
+            sort: '-created',
+          );
+      return result.items;
+    } on ClientException {
+      return const <RecordModel>[];
+    }
+  }
+
+  Future<double> getDriverAverageRating(String driverUserId) async {
+    final result = await _client.collection('ratings').getList(
+          page: 1,
+          perPage: 500,
+          filter: 'driver = "$driverUserId"',
+        );
+    if (result.items.isEmpty) return 0;
+    final sum = result.items.fold<int>(
+      0,
+      (acc, r) => acc + r.getIntValue('stars'),
+    );
+    return sum / result.items.length;
+  }
+
+  // ---------------- driver reports ----------------
+
+  Future<RecordModel> createDriverReport({
+    String? driverUserId,
+    String? towRequestId,
+    required String category,
+    required String description,
+    List<String> photoPaths = const <String>[],
+  }) async {
+    final userId = _userId;
+    if (userId == null) throw Exception('User not authenticated');
+
+    const allowed = {'rude', 'unsafe', 'no_show', 'damage', 'fraud', 'other'};
+    if (!allowed.contains(category)) {
+      throw ArgumentError('Invalid category: $category');
+    }
+
+    final body = <String, dynamic>{
+      'reporter': userId,
+      if (driverUserId != null && driverUserId.trim().isNotEmpty)
+        'driver': driverUserId.trim(),
+      if (towRequestId != null) 'tow_request': towRequestId,
+      'category': category,
+      'description': description,
+      'status': 'pending_review',
+    };
+
+    final files = <http.MultipartFile>[];
+    for (final p in photoPaths) {
+      files.add(await http.MultipartFile.fromPath('photos', p));
+    }
+
+    return _client.collection('driver_reports').create(
+      body: body,
+      files: files,
+    );
+  }
+
+  Future<RecordModel> applyAiReportVerdict({
+    required String reportId,
+    required String aiVerdict,
+    required String aiAction,
+    required double aiConfidence,
+    String? newStatus,
+  }) async {
+    return _client.collection('driver_reports').update(
+      reportId,
+      body: <String, dynamic>{
+        'ai_verdict': aiVerdict,
+        'ai_action': aiAction,
+        'ai_confidence': aiConfidence,
+        'status': newStatus ?? 'ai_reviewed',
+      },
+    );
+  }
+
+  Future<List<RecordModel>> getMyDriverReports() async {
+    final userId = _userId;
+    if (userId == null) return const <RecordModel>[];
+    final result = await _client.collection('driver_reports').getList(
+          page: 1,
+          perPage: 200,
+          filter: 'reporter = "$userId"',
+          sort: '-created',
+        );
+    return result.items;
+  }
+
+  // ---------------- driver applications ----------------
+
+  Future<RecordModel?> getMyDriverApplication() async {
+    final userId = _userId;
+    if (userId == null) return null;
+    try {
+      final result = await _client.collection('driver_applications').getList(
+            page: 1,
+            perPage: 1,
+            filter: 'user = "$userId"',
+            sort: '-updated',
+          );
+      return result.items.isEmpty ? null : result.items.first;
+    } on ClientException {
+      return null;
+    }
+  }
+
+  Future<RecordModel> submitDriverApplication({
+    required String fullName,
+    required String plateNumber,
+    required String licenseFrontPath,
+    required String licenseBackPath,
+    required String nationalIdPath,
+    required String carPhotoPath,
+  }) async {
+    final userId = _userId;
+    if (userId == null) throw Exception('User not authenticated');
+
+    final body = <String, dynamic>{
+      'user': userId,
+      'full_name': fullName.trim(),
+      'plate_number': plateNumber.trim(),
+      'status': 'submitted',
+    };
+
+    final files = <http.MultipartFile>[
+      await http.MultipartFile.fromPath('license_front', licenseFrontPath),
+      await http.MultipartFile.fromPath('license_back', licenseBackPath),
+      await http.MultipartFile.fromPath('national_id', nationalIdPath),
+      await http.MultipartFile.fromPath('car_photo', carPhotoPath),
+    ];
+
+    final existing = await getMyDriverApplication();
+    final RecordModel record;
+    if (existing == null) {
+      record = await _client.collection('driver_applications').create(
+        body: body,
+        files: files,
+      );
+    } else {
+      record = await _client.collection('driver_applications').update(
+        existing.id,
+        body: body,
+        files: files,
+      );
+    }
+
+    try {
+      await _client.collection('users').update(
+        userId,
+        body: <String, dynamic>{'application_status': 'pending'},
+      );
+    } on ClientException {
+      // non-fatal: field may be missing on older instances
+    }
+
+    return record;
+  }
+
+  Future<RecordModel> applyAiApplicationVerdict({
+    required String applicationId,
+    required String aiVerdict,
+    required String aiDecision,
+    required double aiConfidence,
+  }) async {
+    final newStatus = switch (aiDecision) {
+      'approved' => 'approved',
+      'rejected' => 'rejected',
+      _ => 'ai_reviewed',
+    };
+
+    final record = await _client.collection('driver_applications').update(
+      applicationId,
+      body: <String, dynamic>{
+        'ai_verdict': aiVerdict,
+        'ai_decision': aiDecision,
+        'ai_confidence': aiConfidence,
+        'status': newStatus,
+      },
+    );
+
+    final userField = record.getStringValue('user');
+    if (userField.isNotEmpty &&
+        (newStatus == 'approved' || newStatus == 'rejected')) {
+      try {
+        await _client.collection('users').update(
+          userField,
+          body: <String, dynamic>{'application_status': newStatus},
+        );
+      } on ClientException {
+        // non-fatal
+      }
+    }
+
+    return record;
+  }
+
+  // ---------------- support QA learning ----------------
+
+  Future<RecordModel?> saveSupportQa({
+    required String question,
+    required String answer,
+    required String language,
+    String? tags,
+  }) async {
+    final body = <String, dynamic>{
+      'question': question.trim(),
+      'answer': answer.trim(),
+      'language': language,
+      if (tags != null && tags.trim().isNotEmpty) 'tags': tags.trim(),
+      'helpful': 0,
+      if (_userId != null) 'user': _userId,
+    };
+    try {
+      return await _client.collection('support_qa').create(body: body);
+    } on ClientException {
+      return null;
+    }
+  }
+
+  Future<void> markSupportQaHelpful({
+    required String id,
+    required int vote,
+  }) async {
+    final clamped = vote.clamp(-1, 1);
+    try {
+      await _client
+          .collection('support_qa')
+          .update(id, body: <String, dynamic>{'helpful': clamped});
+    } on ClientException {
+      // best-effort: write rules may forbid updates by other users
+    }
+  }
+
+  Future<List<RecordModel>> getHelpfulSupportExamples({
+    required String language,
+    List<String> keywords = const <String>[],
+    int limit = 3,
+  }) async {
+    final filters = <String>['helpful >= 1'];
+    final lang = language.trim();
+    if (lang.isNotEmpty) {
+      filters.add('language = "${_escapeFilterValue(lang)}"');
+    }
+    if (keywords.isNotEmpty) {
+      final kwClauses = keywords
+          .map((k) => k.trim())
+          .where((k) => k.length >= 3)
+          .take(4)
+          .map((k) {
+        final esc = _escapeFilterValue(k);
+        return '(question ~ "$esc" || tags ~ "$esc")';
+      }).toList();
+      if (kwClauses.isNotEmpty) {
+        filters.add('(${kwClauses.join(' || ')})');
+      }
+    }
+    try {
+      final result = await _client.collection('support_qa').getList(
+            page: 1,
+            perPage: limit,
+            filter: filters.join(' && '),
+            sort: '-updated',
+          );
+      return result.items;
+    } on ClientException {
+      return const <RecordModel>[];
+    }
+  }
+
+  Future<RecordModel> getRecord(String collection, String id) async {
+    return _client.collection(collection).getOne(id);
   }
 }

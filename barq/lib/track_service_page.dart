@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'models/place_result.dart';
 import 'models/tow_request_model.dart';
@@ -89,13 +90,18 @@ class _TrackServicePageState extends State<TrackServicePage> {
   late double? _driverLng;
 
   String _status = 'pending';
+  String? _driverPhone;
+  String? _driverUserId;
+  DateTime? _lastDriverUpdate;
   bool _loadingMap = true;
   bool _loadingRequest = false;
   bool _realtimeReady = false;
+  bool _callingDriver = false;
   String? _requestNotice;
   String? _mapNotice;
   int _mapHydrationToken = 0;
   Timer? _pollTimer;
+  Timer? _uiTicker;
 
   PlaceResult? _pickupPlace;
   PlaceResult? _destinationPlace;
@@ -154,11 +160,15 @@ class _TrackServicePageState extends State<TrackServicePage> {
         _loadLatestRequest(silent: true);
       });
     }
+    _uiTicker = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _uiTicker?.cancel();
     if (widget.requestId != null) {
       _pocketBaseService.unsubscribeTowRequest(widget.requestId!);
     }
@@ -250,8 +260,17 @@ class _TrackServicePageState extends State<TrackServicePage> {
       _pickupLng = request.pickupLng ?? _pickupLng;
       _destinationLat = request.destinationLat ?? _destinationLat;
       _destinationLng = request.destinationLng ?? _destinationLng;
+      final driverLatChanged =
+          request.driverLat != null && request.driverLat != _driverLat;
+      final driverLngChanged =
+          request.driverLng != null && request.driverLng != _driverLng;
       _driverLat = request.driverLat ?? _driverLat;
       _driverLng = request.driverLng ?? _driverLng;
+      _driverPhone = request.driverPhone ?? _driverPhone;
+      _driverUserId = request.driverUserId ?? _driverUserId;
+      if (driverLatChanged || driverLngChanged) {
+        _lastDriverUpdate = DateTime.now();
+      }
       if (_status == 'completed' || _status == 'cancelled') {
         _remainingDistanceKm = 0;
       }
@@ -416,9 +435,32 @@ class _TrackServicePageState extends State<TrackServicePage> {
 
   String get _refreshLabel => _isArabic ? 'تحديث' : 'Refresh';
 
-  String get _realtimeReadyLabel => _isArabic
-      ? 'التحديث المباشر متصل بقاعدة البيانات.'
-      : 'Realtime updates are connected to the database.';
+  String get _lastUpdateLabel {
+    final stamp = _lastDriverUpdate;
+    if (stamp == null) {
+      if (_realtimeReady) {
+        return _isArabic ? 'بانتظار موقع السائق' : 'Waiting for driver fix';
+      }
+      return _realtimeFallbackLabel;
+    }
+    final delta = DateTime.now().difference(stamp);
+    if (delta.inSeconds < 5) {
+      return _isArabic ? 'الآن' : 'Just now';
+    }
+    if (delta.inSeconds < 60) {
+      return _isArabic
+          ? 'قبل ${delta.inSeconds} ثانية'
+          : '${delta.inSeconds}s ago';
+    }
+    if (delta.inMinutes < 60) {
+      return _isArabic
+          ? 'قبل ${delta.inMinutes} دقيقة'
+          : '${delta.inMinutes} min ago';
+    }
+    return _isArabic
+        ? 'قبل ${delta.inHours} ساعة'
+        : '${delta.inHours}h ago';
+  }
 
   String get _realtimeFallbackLabel => _isArabic
       ? 'يعرض التطبيق آخر بيانات متاحة من PocketBase.'
@@ -524,6 +566,44 @@ class _TrackServicePageState extends State<TrackServicePage> {
 
   Color _fieldSurface(BuildContext context) {
     return _isDark(context) ? _kBarqFieldDark : _kBarqFieldLight;
+  }
+
+  Future<void> _callDriver() async {
+    if (_callingDriver) return;
+    setState(() => _callingDriver = true);
+    try {
+      var phone = _driverPhone?.trim();
+      if (phone == null || phone.isEmpty) {
+        phone = await _pocketBaseService.resolveDriverPhone(
+          driverUserId: _driverUserId,
+          driverName: _driverName,
+        );
+      }
+      if (!mounted) return;
+      if (phone == null || phone.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_callUnavailableLabel)),
+        );
+        return;
+      }
+      final sanitized = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+      final uri = Uri(scheme: 'tel', path: sanitized);
+      final launched = await launchUrl(uri);
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_isArabic
+              ? 'تعذر فتح تطبيق الاتصال. الرقم: $sanitized'
+              : 'Could not open dialer. Number: $sanitized')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Call failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _callingDriver = false);
+    }
   }
 
   Future<void> _refreshPage() async {
@@ -652,11 +732,13 @@ class _TrackServicePageState extends State<TrackServicePage> {
                       Expanded(
                         child: _infoTile(
                           context,
-                          icon: Icons.cloud_done_outlined,
-                          label: _isArabic ? 'الوقت الحقيقي' : 'Realtime',
-                          value: _realtimeReady
-                              ? _realtimeReadyLabel
-                              : _realtimeFallbackLabel,
+                          icon: _lastDriverUpdate == null
+                              ? Icons.cloud_outlined
+                              : Icons.gps_fixed,
+                          label: _isArabic
+                              ? 'آخر موقع للسائق'
+                              : 'Last driver fix',
+                          value: _lastUpdateLabel,
                           compact: true,
                         ),
                       ),
@@ -827,25 +909,32 @@ class _TrackServicePageState extends State<TrackServicePage> {
                 children: [
                   _priceRow(
                     context,
-                    label: strings.text('estimateBaseFare'),
+                    label:
+                        '${strings.text('estimateBaseFare')} (${_displayDistanceKm.toStringAsFixed(1)} km)',
                     value: _baseFare,
                   ),
-                  const SizedBox(height: 10),
-                  _priceRow(
-                    context,
-                    label:
-                        '${strings.text('estimateDistanceFare')} (${_displayDistanceKm.toStringAsFixed(1)} km)',
-                    value: _distanceFare,
-                  ),
-                  const SizedBox(height: 10),
-                  _priceRow(
-                    context,
-                    label:
-                        _isArabic ? 'المسافة المتبقية' : 'Remaining distance',
-                    valueText: _isArabic
-                        ? '${_remainingDistanceKm.toStringAsFixed(1)} كم'
-                        : '${_remainingDistanceKm.toStringAsFixed(1)} km',
-                  ),
+                  if (_distanceFare > 0) ...[
+                    const SizedBox(height: 10),
+                    _priceRow(
+                      context,
+                      label: _isArabic ? 'رسوم الليل' : 'Night surcharge',
+                      value: _distanceFare,
+                    ),
+                  ],
+                  if (_remainingDistanceKm > 0 &&
+                      _status != 'completed' &&
+                      _status != 'cancelled') ...[
+                    const SizedBox(height: 10),
+                    _priceRow(
+                      context,
+                      label: _isArabic
+                          ? 'المسافة المتبقية'
+                          : 'Remaining distance',
+                      valueText: _isArabic
+                          ? '${_remainingDistanceKm.toStringAsFixed(1)} كم'
+                          : '${_remainingDistanceKm.toStringAsFixed(1)} km',
+                    ),
+                  ],
                   const Divider(height: 24),
                   _priceRow(
                     context,
@@ -877,12 +966,16 @@ class _TrackServicePageState extends State<TrackServicePage> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: FilledButton.icon(
-                          onPressed: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(_callUnavailableLabel)),
-                            );
-                          },
-                          icon: const Icon(Icons.call_outlined),
+                          onPressed: _callingDriver ? null : _callDriver,
+                          icon: _callingDriver
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.call_outlined),
                           label: Text(strings.text('trackCallDriver')),
                         ),
                       ),
