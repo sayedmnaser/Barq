@@ -17,6 +17,9 @@ class DriverLocationService {
   DriverLocationService._();
   static final DriverLocationService instance = DriverLocationService._();
 
+  static const Duration _livePushInterval = Duration(seconds: 5);
+  static const Duration _initialFixTimeout = Duration(seconds: 10);
+
   StreamSubscription<Position>? _subscription;
   bool _starting = false;
 
@@ -39,6 +42,7 @@ class DriverLocationService {
       }
 
       final settings = _buildSettings();
+      unawaited(_pushCurrentPositionOnce());
       _subscription = Geolocator.getPositionStream(locationSettings: settings)
           .listen(_onPosition, onError: (_) {});
     } finally {
@@ -56,7 +60,7 @@ class DriverLocationService {
       return AndroidSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 0,
-        intervalDuration: const Duration(seconds: 20),
+        intervalDuration: _livePushInterval,
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationTitle: 'Barq driver active',
           notificationText: 'Sharing live location with your customer.',
@@ -77,6 +81,18 @@ class DriverLocationService {
       accuracy: LocationAccuracy.high,
       distanceFilter: 0,
     );
+  }
+
+  Future<void> _pushCurrentPositionOnce() async {
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: _initialFixTimeout,
+      );
+      await _onPosition(position);
+    } catch (_) {
+      // The stream below will retry when the next fix arrives.
+    }
   }
 
   Future<void> _onPosition(Position position) async {

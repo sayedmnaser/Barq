@@ -94,7 +94,6 @@ class _MyAppState extends State<MyApp> {
         }
       });
     });
-
   }
 
   @override
@@ -611,7 +610,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings(widget.language);
@@ -1053,7 +1051,7 @@ class _HomePageState extends State<HomePage> {
                 _infoPill(
                   context,
                   icon: Icons.event_outlined,
-                  label: strings.text('serviceHistory'),
+                  label: widget.language == AppLanguage.ar ? 'التاريخ' : 'Date',
                   value: _formatShortDate(request.source.updated),
                 )
               else
@@ -1072,13 +1070,13 @@ class _HomePageState extends State<HomePage> {
                 label: strings.text('distance'),
                 value: '${request.distanceKm.toStringAsFixed(1)} km',
               ),
-              if (request.source.totalFare > 0) ...[
+              if (request.distanceKm > 0) ...[
                 const SizedBox(width: 12),
                 _infoPill(
                   context,
                   icon: Icons.payments_outlined,
                   label: 'Fare',
-                  value: '${request.source.totalFare.toStringAsFixed(3)} BHD',
+                  value: '${_displayFareFor(request).toStringAsFixed(3)} BHD',
                 ),
               ],
             ],
@@ -1096,6 +1094,21 @@ class _HomePageState extends State<HomePage> {
     final m = value.month.toString().padLeft(2, '0');
     final d = value.day.toString().padLeft(2, '0');
     return '${value.year}-$m-$d';
+  }
+
+  double _tierFare(double km) {
+    if (km <= 0) return 10.0;
+    if (km <= 15) return 10.0;
+    if (km <= 20) return 15.0;
+    return 20.0;
+  }
+
+  double _displayFareFor(ActiveRequest request) {
+    final km = request.distanceKm;
+    final base = _tierFare(km);
+    final stored = request.source.distanceFare ?? 0;
+    final night = stored > 0 && stored <= 5.001 ? stored : 0.0;
+    return base + night;
   }
 
   Widget _historyActions(BuildContext context, ActiveRequest request) {
@@ -1240,23 +1253,29 @@ class _HomePageState extends State<HomePage> {
           children: [
             Icon(icon, size: 18, color: _mutedColor(context)),
             const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: _mutedColor(context),
-                      ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-              ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: _mutedColor(context),
+                        ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

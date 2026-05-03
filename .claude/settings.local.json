@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Skill(update-config)",
-      "Bash(flutter analyze *)"
+      "Bash(flutter analyze *)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\rtx4060ti\\\\Documents\\\\GitHub\\\\Barq\\\\barq\"; powershell -ExecutionPolicy Bypass -File \".\\\\build_release.ps1\" -GeminiApiKey \"AIzaSyDgfgqKGhh894rCvD5Rhmgw8PPOOAPn0lY\")"
     ]
   }
 }

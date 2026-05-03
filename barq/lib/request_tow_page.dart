@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -22,6 +23,7 @@ class NearbyDriver {
     required this.name,
     required this.place,
     required this.distanceKm,
+    this.userId,
     this.rating = 0,
     this.totalRides = 0,
     this.licensePlate,
@@ -31,6 +33,7 @@ class NearbyDriver {
   final String name;
   final PlaceResult place;
   final double distanceKm;
+  final String? userId;
   final double rating;
   final int totalRides;
   final String? licensePlate;
@@ -66,6 +69,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
   bool _shareLocationEnabled = true;
   String? _routeError;
   List<NearbyDriver> _nearbyDrivers = const <NearbyDriver>[];
+  Timer? _nearbyDriversTimer;
 
   bool get _isArabic => widget.language == AppLanguage.ar;
 
@@ -73,10 +77,17 @@ class _RequestTowPageState extends State<RequestTowPage> {
   void initState() {
     super.initState();
     _loadLocationPreferences();
+    _nearbyDriversTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      final pickup = _pickupPlace;
+      if (pickup != null && !_isSubmitting) {
+        _loadNearbyDrivers(userPlace: pickup, silent: true);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _nearbyDriversTimer?.cancel();
     _pickupController.dispose();
     _destinationController.dispose();
     _detailsController.dispose();
@@ -329,10 +340,15 @@ class _RequestTowPageState extends State<RequestTowPage> {
     }
   }
 
-  Future<void> _loadNearbyDrivers({required PlaceResult userPlace}) async {
-    setState(() {
-      _isLoadingNearbyDrivers = true;
-    });
+  Future<void> _loadNearbyDrivers({
+    required PlaceResult userPlace,
+    bool silent = false,
+  }) async {
+    if (!silent) {
+      setState(() {
+        _isLoadingNearbyDrivers = true;
+      });
+    }
 
     try {
       final profiles = await _pocketBaseService.getDriverProfiles(limit: 200);
@@ -342,29 +358,25 @@ class _RequestTowPageState extends State<RequestTowPage> {
           .where((driver) => driver.distanceKm <= 12.0)
           .toList(growable: false);
 
-      if (candidates.isEmpty) {
-        candidates = _buildFallbackNearbyDrivers(userPlace: userPlace);
-      }
-
       candidates.sort((a, b) => _aiScore(b).compareTo(_aiScore(a)));
-      final topFive = candidates.take(5).toList(growable: false);
+      final topThree = candidates.take(3).toList(growable: false);
 
       if (!mounted) {
         return;
       }
       setState(() {
-        _nearbyDrivers = topFive;
+        _nearbyDrivers = topThree;
         _isLoadingNearbyDrivers = false;
       });
     } catch (_) {
-      final fallback = _buildFallbackNearbyDrivers(userPlace: userPlace)
-          .take(5)
-          .toList(growable: false);
       if (!mounted) {
         return;
       }
+      if (silent) {
+        return;
+      }
       setState(() {
-        _nearbyDrivers = fallback;
+        _nearbyDrivers = const <NearbyDriver>[];
         _isLoadingNearbyDrivers = false;
       });
     }
@@ -375,7 +387,17 @@ class _RequestTowPageState extends State<RequestTowPage> {
     required PlaceResult userPlace,
   }) {
     final drivers = <NearbyDriver>[];
+    final selfId = _pocketBaseService.currentUserRecord?.id ?? '';
     for (final record in profiles) {
+      final ownerUserId = record.getStringValue('user').trim();
+      if (selfId.isNotEmpty && ownerUserId == selfId) {
+        continue;
+      }
+      // Skip drivers that explicitly toggled themselves offline.
+      if (record.data.containsKey('is_available') &&
+          record.getBoolValue('is_available') == false) {
+        continue;
+      }
       final lat = _extractCoordinate(record, const <String>[
         'driver_lat',
         'current_lat',
@@ -431,58 +453,10 @@ class _RequestTowPageState extends State<RequestTowPage> {
             longitude: lng,
           ),
           distanceKm: distanceKm,
+          userId: ownerUserId.isEmpty ? null : ownerUserId,
           rating: rating,
           totalRides: rides,
           licensePlate: plate.isEmpty ? null : plate,
-        ),
-      );
-    }
-    return drivers;
-  }
-
-  List<NearbyDriver> _buildFallbackNearbyDrivers({
-    required PlaceResult userPlace,
-  }) {
-    const offsets = <(double lat, double lng)>[
-      (-0.0045, 0.0032),
-      (0.0038, -0.0040),
-      (0.0060, 0.0012),
-      (-0.0028, -0.0064),
-      (0.0055, 0.0048),
-      (-0.0065, 0.0025),
-      (0.0020, -0.0070),
-    ];
-
-    final drivers = <NearbyDriver>[];
-    for (var index = 0; index < offsets.length; index++) {
-      final offset = offsets[index];
-      final lat = userPlace.latitude + offset.$1;
-      final lng = userPlace.longitude + offset.$2;
-      final location = LatLng(lat, lng);
-      final distanceKm = _distanceCalculator.as(
-        LengthUnit.Kilometer,
-        userPlace.latLng,
-        location,
-      );
-      final rating = 4.2 + ((index % 4) * 0.2);
-      final rides = 80 + (index * 35);
-      final name = _isArabic ? 'سائق ${index + 1}' : 'Driver ${index + 1}';
-      drivers.add(
-        NearbyDriver(
-          id: 'sim_$index',
-          name: name,
-          place: PlaceResult(
-            title: name,
-            subtitle: _isArabic
-                ? 'يبعد ${distanceKm.toStringAsFixed(1)} كم'
-                : '${distanceKm.toStringAsFixed(1)} km away',
-            latitude: lat,
-            longitude: lng,
-          ),
-          distanceKm: distanceKm,
-          rating: rating,
-          totalRides: rides,
-          licensePlate: 'TOW-${2400 + index}',
         ),
       );
     }
@@ -595,6 +569,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
         driverLat: preferredDriver?.place.latitude,
         driverLng: preferredDriver?.place.longitude,
         driverName: preferredDriver?.name,
+        driverUserId: preferredDriver?.userId,
         driverRating: preferredDriver?.rating,
         driverTotalRides: preferredDriver?.totalRides,
         licensePlate: preferredDriver?.licensePlate,
@@ -628,6 +603,8 @@ class _RequestTowPageState extends State<RequestTowPage> {
             pickupLng: _pickupPlace?.longitude,
             destinationLat: _destinationPlace?.latitude,
             destinationLng: _destinationPlace?.longitude,
+            driverLat: towRequest.driverLat ?? preferredDriver?.place.latitude,
+            driverLng: towRequest.driverLng ?? preferredDriver?.place.longitude,
             language: widget.language,
           ),
         ),
@@ -905,7 +882,12 @@ class _RequestTowPageState extends State<RequestTowPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: _isSubmitting ? null : () => _submitRequest(strings),
+                onPressed: _isSubmitting
+                    ? null
+                    : () => _submitRequest(
+                          strings,
+                          preferredDriver: _nearestDriver,
+                        ),
                 child: _isSubmitting
                     ? const SizedBox(
                         width: 20,

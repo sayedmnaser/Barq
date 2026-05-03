@@ -88,8 +88,8 @@ class _SignInPageState extends State<SignInPage> {
     } on ClientException catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      final msg = e.response['message'] as String? ??
-          strings.text('otpSendFailed');
+      final msg =
+          e.response['message'] as String? ?? strings.text('otpSendFailed');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(msg)),
       );
@@ -144,7 +144,6 @@ class _SignInPageState extends State<SignInPage> {
       );
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -222,13 +221,15 @@ class _SignInPageState extends State<SignInPage> {
                       const SizedBox(height: 16),
 
                       // ── OTP delivery toggle ──
-                      Row(
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           Text(
                             strings.text('otpDelivery'),
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
-                          const SizedBox(width: 12),
                           ChoiceChip(
                             label: Text(strings.text('otpViaEmail')),
                             selected: _delivery == _OtpDelivery.email,
@@ -240,7 +241,6 @@ class _SignInPageState extends State<SignInPage> {
                               });
                             },
                           ),
-                          const SizedBox(width: 8),
                           ChoiceChip(
                             label: Text(strings.text('otpViaPhone')),
                             selected: _delivery == _OtpDelivery.phone,
@@ -291,14 +291,12 @@ class _SignInPageState extends State<SignInPage> {
                       // ── Send / Resend OTP button ──
                       if (!_otpSent)
                         FilledButton(
-                          onPressed: _isSubmitting
-                              ? null
-                              : () => _sendOtp(strings),
+                          onPressed:
+                              _isSubmitting ? null : () => _sendOtp(strings),
                           style: FilledButton.styleFrom(
                             backgroundColor: kLightningYellow,
                             foregroundColor: kLightningNavy,
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
                           ),
                           child: Text(
                             _isSubmitting
@@ -320,14 +318,12 @@ class _SignInPageState extends State<SignInPage> {
                         ),
                         const SizedBox(height: 12),
                         FilledButton(
-                          onPressed: _isSubmitting
-                              ? null
-                              : () => _verifyOtp(strings),
+                          onPressed:
+                              _isSubmitting ? null : () => _verifyOtp(strings),
                           style: FilledButton.styleFrom(
                             backgroundColor: kLightningYellow,
                             foregroundColor: kLightningNavy,
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
                           ),
                           child: Text(
                             _isSubmitting
@@ -337,9 +333,8 @@ class _SignInPageState extends State<SignInPage> {
                         ),
                         const SizedBox(height: 8),
                         TextButton(
-                          onPressed: _isSubmitting
-                              ? null
-                              : () => _sendOtp(strings),
+                          onPressed:
+                              _isSubmitting ? null : () => _sendOtp(strings),
                           child: Text(strings.text('resendOtp')),
                         ),
                       ],

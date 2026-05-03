@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
@@ -246,8 +248,8 @@ class _DriverPageState extends State<DriverPage> {
     }
 
     try {
-      final currentPlace =
-          _driverLivePlace ?? await LocationService.tryGetCurrentPlaceSilently();
+      final currentPlace = _driverLivePlace ??
+          await LocationService.tryGetCurrentPlaceSilently();
       await _pocketBaseService.upsertCurrentDriverProfile(
         driverName: driverName,
         licensePlate: _licensePlateController.text.trim(),
@@ -414,13 +416,35 @@ class _DriverPageState extends State<DriverPage> {
       latitude: nextRequest.destinationLat,
       longitude: nextRequest.destinationLng,
     );
+    await _backfillResolvedCoordinates(
+      request: nextRequest,
+      pickup: pickup,
+      destination: destination,
+    );
 
     RouteInfo? routeInfo;
-    if (pickup != null && destination != null) {
+    final driverPlace = _driverLivePlace;
+    LatLng? routeStart;
+    LatLng? routeEnd;
+    if (driverPlace != null &&
+        nextRequest.status == 'en_route' &&
+        destination != null) {
+      routeStart = driverPlace.latLng;
+      routeEnd = destination.latLng;
+    } else if (driverPlace != null &&
+        (nextRequest.status == 'assigned' || nextRequest.status == 'pending') &&
+        pickup != null) {
+      routeStart = driverPlace.latLng;
+      routeEnd = pickup.latLng;
+    } else if (pickup != null && destination != null) {
+      routeStart = pickup.latLng;
+      routeEnd = destination.latLng;
+    }
+    if (routeStart != null && routeEnd != null) {
       try {
         routeInfo = await BahrainMapService.buildRoute(
-          start: pickup.latLng,
-          end: destination.latLng,
+          start: routeStart,
+          end: routeEnd,
         );
       } catch (_) {
         routeInfo = null;
@@ -499,15 +523,42 @@ class _DriverPageState extends State<DriverPage> {
     required RouteInfo? routeInfo,
   }) {
     if (pickup == null) {
-      return 'Customer pickup location could not be resolved on the map.';
+      return 'Pickup coordinates are missing for this request. New requests save exact map points after the PocketBase migration is deployed.';
     }
     if (destination == null) {
-      return 'Destination marker is unavailable for this request.';
+      return 'Destination coordinates are missing, so this job cannot auto-complete until the destination is resolved.';
     }
     if (routeInfo == null) {
       return 'Markers are visible, but route calculation is unavailable right now.';
     }
     return null;
+  }
+
+  Future<void> _backfillResolvedCoordinates({
+    required TowRequest request,
+    required PlaceResult? pickup,
+    required PlaceResult? destination,
+  }) async {
+    final pickupMissing =
+        request.pickupLat == null || request.pickupLng == null;
+    final destinationMissing =
+        request.destinationLat == null || request.destinationLng == null;
+    if ((!pickupMissing || pickup == null) &&
+        (!destinationMissing || destination == null)) {
+      return;
+    }
+
+    try {
+      await _pocketBaseService.updateTowRequestCoordinates(
+        requestId: request.id,
+        pickupLat: pickupMissing ? pickup?.latitude : null,
+        pickupLng: pickupMissing ? pickup?.longitude : null,
+        destinationLat: destinationMissing ? destination?.latitude : null,
+        destinationLng: destinationMissing ? destination?.longitude : null,
+      );
+    } catch (_) {
+      // Best-effort only. New requests persist coordinates at creation time.
+    }
   }
 
   double? _tryParseDouble(String value) {
@@ -553,7 +604,96 @@ class _DriverPageState extends State<DriverPage> {
     );
   }
 
+  static const double _kArrivalRadiusMeters = 150.0;
+
+  Future<bool> _ensureDriverNear({
+    required double? targetLat,
+    required double? targetLng,
+    required String label,
+  }) async {
+    if (targetLat == null || targetLng == null) {
+      return true;
+    }
+    Position? pos;
+    try {
+      pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // fall back to last cached fix from the foreground stream
+      final live = _driverLivePlace;
+      if (live != null) {
+        final meters = _haversineMeters(
+          live.latitude,
+          live.longitude,
+          targetLat,
+          targetLng,
+        );
+        if (meters <= _kArrivalRadiusMeters) return true;
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Too far from $label (${meters.round()} m). Move closer to continue.',
+              ),
+            ),
+          );
+        }
+        return false;
+      }
+      // no fix at all — refuse rather than allow false completion
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No location fix. Enable GPS and try again.',
+            ),
+          ),
+        );
+      }
+      return false;
+    }
+
+    final meters = _haversineMeters(
+      pos.latitude,
+      pos.longitude,
+      targetLat,
+      targetLng,
+    );
+    if (meters > _kArrivalRadiusMeters) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Too far from $label (${meters.round()} m). Move closer to continue.',
+            ),
+          ),
+        );
+      }
+      return false;
+    }
+    return true;
+  }
+
+  double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
+    const earthRadius = 6371000.0;
+    final dLat = (lat2 - lat1) * math.pi / 180.0;
+    final dLng = (lng2 - lng1) * math.pi / 180.0;
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180.0) *
+            math.cos(lat2 * math.pi / 180.0) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
+    return 2 * earthRadius * math.asin(math.sqrt(a));
+  }
+
   Future<void> _startTrip(TowRequest request) async {
+    final ok = await _ensureDriverNear(
+      targetLat: request.pickupLat,
+      targetLng: request.pickupLng,
+      label: 'pickup',
+    );
+    if (!ok) return;
     await _updateRequest(
       request: request,
       status: 'en_route',
@@ -566,20 +706,6 @@ class _DriverPageState extends State<DriverPage> {
           _tryParseInt(_etaMinutesController.text) ?? request.etaMinutes,
       distanceKm:
           _tryParseDouble(_distanceKmController.text) ?? request.distanceKm,
-    );
-  }
-
-  Future<void> _completeTrip(TowRequest request) async {
-    await _updateRequest(
-      request: request,
-      status: 'completed',
-      driverName: _driverNameController.text.trim(),
-      driverRating:
-          request.driverRating ?? _tryParseDouble(_driverRatingController.text),
-      driverTotalRides: request.driverTotalRides ??
-          _tryParseInt(_driverTotalRidesController.text),
-      etaMinutes: 0,
-      distanceKm: request.distanceKm,
     );
   }
 
@@ -615,6 +741,11 @@ class _DriverPageState extends State<DriverPage> {
 
       if (!mounted) {
         return;
+      }
+
+      if (status == 'assigned' || status == 'en_route') {
+        await DriverLocationService.instance.start();
+        await _refreshDriverLocation();
       }
 
       await _loadRequests(silent: true);
@@ -981,9 +1112,8 @@ class _DriverPageState extends State<DriverPage> {
                 child: _metricTile(
                   context,
                   title: 'vehicle',
-                  value: request.vehicleType.isEmpty
-                      ? '--'
-                      : request.vehicleType,
+                  value:
+                      request.vehicleType.isEmpty ? '--' : request.vehicleType,
                 ),
               ),
               const SizedBox(width: 8),
@@ -1080,8 +1210,7 @@ class _DriverPageState extends State<DriverPage> {
                   ? const Color(0xFF101827)
                   : const Color(0xFFEFF1F5),
               child: url.isEmpty
-                  ? Icon(Icons.image_not_supported,
-                      color: _mutedColor(context))
+                  ? Icon(Icons.image_not_supported, color: _mutedColor(context))
                   : Image.network(
                       url,
                       fit: BoxFit.cover,
@@ -1106,8 +1235,7 @@ class _DriverPageState extends State<DriverPage> {
               right: 0,
               bottom: 0,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                 color: Colors.black.withValues(alpha: 0.55),
                 child: Text(
                   label,
@@ -1280,14 +1408,11 @@ class _DriverPageState extends State<DriverPage> {
           ),
           const SizedBox(height: 12),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
               color: hasPlate
                   ? _kDriverYellow.withValues(alpha: 0.16)
-                  : (_isDark(context)
-                      ? _kDriverNavy
-                      : const Color(0xFFF7F7FB)),
+                  : (_isDark(context) ? _kDriverNavy : const Color(0xFFF7F7FB)),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: hasPlate ? _kDriverYellow : _borderColor(context),
@@ -1310,9 +1435,7 @@ class _DriverPageState extends State<DriverPage> {
                           fontWeight: FontWeight.w800,
                           letterSpacing: 1.2,
                           color: hasPlate
-                              ? (_isDark(context)
-                                  ? Colors.white
-                                  : _kDriverNavy)
+                              ? (_isDark(context) ? Colors.white : _kDriverNavy)
                               : _mutedColor(context),
                         ),
                   ),
@@ -1338,8 +1461,7 @@ class _DriverPageState extends State<DriverPage> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed:
-                      _isScanningPlate || _isSaving ? null : _scanPlate,
+                  onPressed: _isScanningPlate || _isSaving ? null : _scanPlate,
                   style: FilledButton.styleFrom(
                     backgroundColor: _kDriverYellow,
                     foregroundColor: _kDriverNavy,
@@ -1354,8 +1476,8 @@ class _DriverPageState extends State<DriverPage> {
                           ),
                         )
                       : const Icon(Icons.camera_alt_outlined),
-                  label: Text(
-                      _isScanningPlate ? 'Scanning...' : 'Scan Car Plate'),
+                  label:
+                      Text(_isScanningPlate ? 'Scanning...' : 'Scan Car Plate'),
                 ),
               ),
               const SizedBox(width: 10),
@@ -1390,6 +1512,7 @@ class _DriverPageState extends State<DriverPage> {
               setState(() => _isAvailable = value);
               if (value) {
                 await DriverLocationService.instance.start();
+                await _refreshDriverLocation();
               } else {
                 await DriverLocationService.instance.stop();
                 try {
@@ -1583,12 +1706,29 @@ class _DriverPageState extends State<DriverPage> {
   }
 
   Future<void> _refreshDriverLocation() async {
+    if (!_isAvailable) {
+      return;
+    }
     try {
       final place = await LocationService.tryGetCurrentPlaceSilently();
       if (!mounted || place == null) return;
+      final prev = _driverLivePlace;
       setState(() {
         _driverLivePlace = place;
       });
+      // Trigger route refresh when driver moves enough or there is no route yet.
+      final movedFar = prev == null ||
+          _haversineMeters(
+                prev.latitude,
+                prev.longitude,
+                place.latitude,
+                place.longitude,
+              ) >=
+              200;
+      if (movedFar && _focusedRequest != null) {
+        _lastMapSignature = '';
+        _syncFocusedRequestMap();
+      }
       final driverName = _driverNameController.text.trim();
       if (driverName.isEmpty) return;
       try {
@@ -1603,11 +1743,20 @@ class _DriverPageState extends State<DriverPage> {
         // non-fatal: profile collection or rules may block writes
       }
       try {
-        await _pocketBaseService.pushDriverLocationToActiveRequests(
+        final completedAny =
+            await _pocketBaseService.pushDriverLocationToActiveRequests(
           latitude: place.latitude,
           longitude: place.longitude,
           driverName: driverName,
         );
+        if (completedAny && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Trip completed automatically at destination.'),
+            ),
+          );
+          await _loadRequests(silent: true);
+        }
       } catch (_) {
         // non-fatal: keeps user marker stale but does not break the app
       }
@@ -1730,8 +1879,7 @@ class _DriverPageState extends State<DriverPage> {
               const SizedBox(width: 12),
               _legendDot(const Color(0xFF16A34A)),
               const SizedBox(width: 4),
-              Text('Customer',
-                  style: Theme.of(context).textTheme.labelSmall),
+              Text('Customer', style: Theme.of(context).textTheme.labelSmall),
               const SizedBox(width: 12),
               _legendDot(const Color(0xFFDC2626)),
               const SizedBox(width: 4),
@@ -1930,23 +2078,10 @@ class _DriverPageState extends State<DriverPage> {
                 ],
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => _openTracking(request),
-                      icon: const Icon(Icons.map_outlined),
-                      label: const Text('Track'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _buildPrimaryAction(
-                      request: request,
-                      isPending: isPending,
-                    ),
-                  ),
-                ],
+              _buildRequestActions(
+                context,
+                request: request,
+                isPending: isPending,
               ),
               if (request.status == 'assigned' ||
                   request.status == 'en_route') ...[
@@ -2089,25 +2224,10 @@ class _DriverPageState extends State<DriverPage> {
     required bool isPending,
   }) {
     if (isPending) {
-      return Row(
-        children: [
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: _isSaving ? null : () => _declineRequest(request),
-              icon: const Icon(Icons.close),
-              label: const Text('Decline'),
-              style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: FilledButton.icon(
-              onPressed: _isSaving ? null : () => _acceptRequest(request),
-              icon: const Icon(Icons.check_circle_outline),
-              label: const Text('Accept'),
-            ),
-          ),
-        ],
+      return FilledButton.icon(
+        onPressed: _isSaving ? null : () => _acceptRequest(request),
+        icon: const Icon(Icons.check_circle_outline, size: 18),
+        label: const Text('Accept', overflow: TextOverflow.ellipsis),
       );
     }
 
@@ -2127,14 +2247,97 @@ class _DriverPageState extends State<DriverPage> {
       );
     }
 
-    return FilledButton.icon(
-      onPressed: _isSaving ? null : () => _completeTrip(request),
-      style: FilledButton.styleFrom(
-        backgroundColor: _kDriverYellow,
-        foregroundColor: _kDriverNavy,
+    return OutlinedButton.icon(
+      onPressed: null,
+      icon: const Icon(Icons.location_on_outlined, size: 18),
+      label: const Text(
+        'Auto-completes at destination',
+        overflow: TextOverflow.ellipsis,
       ),
-      icon: const Icon(Icons.task_alt, size: 18),
-      label: const Text('Complete', overflow: TextOverflow.ellipsis),
+    );
+  }
+
+  Widget _buildRequestActions(
+    BuildContext context, {
+    required TowRequest request,
+    required bool isPending,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = 10.0;
+        final twoColumn = constraints.maxWidth >= 330;
+        final halfWidth =
+            twoColumn ? (constraints.maxWidth - gap) / 2 : constraints.maxWidth;
+
+        Widget sized(double width, Widget child) {
+          return SizedBox(
+            width: width,
+            height: 48,
+            child: child,
+          );
+        }
+
+        if (isPending) {
+          return Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              sized(
+                halfWidth,
+                OutlinedButton.icon(
+                  onPressed: _isSaving ? null : () => _declineRequest(request),
+                  icon: const Icon(Icons.close, size: 18),
+                  label: const Text(
+                    'Decline',
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                ),
+              ),
+              sized(
+                halfWidth,
+                FilledButton.icon(
+                  onPressed: _isSaving ? null : () => _acceptRequest(request),
+                  icon: const Icon(Icons.check_circle_outline, size: 18),
+                  label: const Text(
+                    'Accept',
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
+        final primary = _buildPrimaryAction(
+          request: request,
+          isPending: isPending,
+        );
+        final primaryWidth =
+            request.status == 'en_route' ? constraints.maxWidth : halfWidth;
+
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: [
+            sized(
+              request.status == 'en_route' ? constraints.maxWidth : halfWidth,
+              OutlinedButton.icon(
+                onPressed: () => _openTracking(request),
+                icon: const Icon(Icons.map_outlined, size: 18),
+                label: const Text(
+                  'Track',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ),
+            ),
+            sized(primaryWidth, primary),
+          ],
+        );
+      },
     );
   }
 
@@ -2171,8 +2374,7 @@ class _DriverPageState extends State<DriverPage> {
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () =>
-                Navigator.of(ctx).pop(controller.text.trim()),
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
             child: const Text('Submit cancel'),
           ),
         ],
@@ -2246,7 +2448,8 @@ class _DriverPageState extends State<DriverPage> {
         'rejected' => 'AI rejected cancellation. Job restored.',
         _ => 'AI flagged for human review.',
       };
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(label)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(label)));
       await _loadRequests(silent: true);
     } catch (_) {
       // best-effort: an admin can finalise manually if AI unavailable
@@ -2299,7 +2502,6 @@ class _DriverPageState extends State<DriverPage> {
     );
   }
 }
-
 
 class _FullscreenMapPage extends StatelessWidget {
   const _FullscreenMapPage({

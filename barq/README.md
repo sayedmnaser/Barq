@@ -59,6 +59,7 @@ Optional fields the app can read when available:
 - `destination_lng`
 - `driver_lat`
 - `driver_lng`
+- `driver`
 - `distance_km`
 - `eta_minutes`
 - `base_fare`

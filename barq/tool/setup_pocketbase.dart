@@ -1,7 +1,7 @@
 /// Run this script once to create the `tow_requests` collection in PocketBase.
 ///
 /// Usage:
-///   dart run tool/setup_pocketbase.dart <admin_email> <admin_password>
+///   dart run tool/setup_pocketbase.dart admin_email admin_password
 ///
 /// Example:
 ///   dart run tool/setup_pocketbase.dart admin@example.com mysecretpassword
@@ -15,7 +15,8 @@ const String pocketBaseUrl = 'http://127.0.0.1:8090';
 
 Future<void> main(List<String> args) async {
   if (args.length < 2) {
-    stderr.writeln('Usage: dart run tool/setup_pocketbase.dart <admin_email> <admin_password>');
+    stderr.writeln(
+        'Usage: dart run tool/setup_pocketbase.dart <admin_email> <admin_password>');
     exit(1);
   }
 
@@ -104,6 +105,42 @@ Future<void> main(List<String> args) async {
         'options': {'min': null, 'max': null, 'pattern': ''},
       },
       {
+        'name': 'pickup_lat',
+        'type': 'number',
+        'required': false,
+        'options': {'min': null, 'max': null, 'noDecimal': false},
+      },
+      {
+        'name': 'pickup_lng',
+        'type': 'number',
+        'required': false,
+        'options': {'min': null, 'max': null, 'noDecimal': false},
+      },
+      {
+        'name': 'destination_lat',
+        'type': 'number',
+        'required': false,
+        'options': {'min': null, 'max': null, 'noDecimal': false},
+      },
+      {
+        'name': 'destination_lng',
+        'type': 'number',
+        'required': false,
+        'options': {'min': null, 'max': null, 'noDecimal': false},
+      },
+      {
+        'name': 'driver_lat',
+        'type': 'number',
+        'required': false,
+        'options': {'min': null, 'max': null, 'noDecimal': false},
+      },
+      {
+        'name': 'driver_lng',
+        'type': 'number',
+        'required': false,
+        'options': {'min': null, 'max': null, 'noDecimal': false},
+      },
+      {
         'name': 'driver_name',
         'type': 'text',
         'required': false,
@@ -180,6 +217,9 @@ Future<void> main(List<String> args) async {
     print('  details         -> Text');
     print('  service_timing  -> Text (required)');
     print('  status          -> Text (required)');
+    print('  pickup_lat/lng  -> Number');
+    print('  destination_lat/lng -> Number');
+    print('  driver_lat/lng  -> Number');
     print('  driver_name     -> Text');
     print('  driver_rating   -> Number');
     print('  driver_total_rides -> Number (integer)');

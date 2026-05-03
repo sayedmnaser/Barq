@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
 import 'package:pocketbase/pocketbase.dart';
@@ -15,6 +16,7 @@ class PocketBaseService {
   static const int sessionDays = 15;
   static const String _loginTimestampKey = 'pb_login_timestamp';
   static const String _driverProfilesCollection = 'driver_profiles';
+  static const double _autoCompleteRadiusMeters = 150.0;
 
   static PocketBaseService? _instance;
 
@@ -521,6 +523,7 @@ class PocketBaseService {
     double? driverLat,
     double? driverLng,
     String? driverName,
+    String? driverUserId,
     double? driverRating,
     int? driverTotalRides,
     String? licensePlate,
@@ -554,6 +557,8 @@ class PocketBaseService {
       if (driverLng != null) 'driver_lng': driverLng,
       if (driverName != null && driverName.trim().isNotEmpty)
         'driver_name': driverName.trim(),
+      if (driverUserId != null && driverUserId.trim().isNotEmpty)
+        'driver': driverUserId.trim(),
       if (driverRating != null) 'driver_rating': driverRating,
       if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
       if (licensePlate != null && licensePlate.trim().isNotEmpty)
@@ -580,6 +585,7 @@ class PocketBaseService {
           'driver_lat',
           'driver_lng',
           'driver_name',
+          'driver',
           'driver_rating',
           'driver_total_rides',
           'license_plate',
@@ -656,9 +662,8 @@ class PocketBaseService {
     }
 
     final selfId = _userId ?? '';
-    final selfFilter = selfId.isEmpty
-        ? ''
-        : ' && user != "${_escapeFilterValue(selfId)}"';
+    final selfFilter =
+        selfId.isEmpty ? '' : ' && user != "${_escapeFilterValue(selfId)}"';
     final result = await _client.collection('tow_requests').getList(
           page: 1,
           perPage: 200,
@@ -709,9 +714,8 @@ class PocketBaseService {
     if (userId.isNotEmpty) {
       filters.add('driver = "$userId"');
     }
-    final driverFilter = filters.length == 1
-        ? filters.first
-        : '(${filters.join(' || ')})';
+    final driverFilter =
+        filters.length == 1 ? filters.first : '(${filters.join(' || ')})';
 
     final result = await _client.collection('tow_requests').getList(
           page: 1,
@@ -731,28 +735,28 @@ class PocketBaseService {
   ///
   /// Also self-heals the `driver` relation on rows that were accepted before
   /// the relation could be persisted, by matching on `driver_name`.
-  Future<void> pushDriverLocationToActiveRequests({
+  Future<bool> pushDriverLocationToActiveRequests({
     required double latitude,
     required double longitude,
     String? driverName,
   }) async {
     if (!isCurrentUserDriver) {
-      return;
+      return false;
     }
     final userId = _userId;
     if (userId == null) {
-      return;
+      return false;
     }
 
     final escapedUserId = _escapeFilterValue(userId);
     final filters = <String>['driver = "$escapedUserId"'];
     final normalizedDriverName = (driverName ?? currentUserName).trim();
     if (normalizedDriverName.isNotEmpty) {
-      filters.add('driver_name = "${_escapeFilterValue(normalizedDriverName)}"');
+      filters
+          .add('driver_name = "${_escapeFilterValue(normalizedDriverName)}"');
     }
-    final driverFilter = filters.length == 1
-        ? filters.first
-        : '(${filters.join(' || ')})';
+    final driverFilter =
+        filters.length == 1 ? filters.first : '(${filters.join(' || ')})';
 
     List<RecordModel> records = const <RecordModel>[];
     try {
@@ -769,24 +773,63 @@ class PocketBaseService {
     }
 
     if (records.isEmpty) {
-      return;
+      return false;
     }
 
+    var completedAny = false;
     for (final record in records) {
       final body = <String, dynamic>{
         'driver_lat': latitude,
         'driver_lng': longitude,
       };
+      final status = record.getStringValue('status');
+      final destinationLat = _recordCoordinate(record, 'destination_lat');
+      final destinationLng = _recordCoordinate(record, 'destination_lng');
+      if (status == 'en_route' &&
+          destinationLat != null &&
+          destinationLng != null) {
+        final meters = _haversineMeters(
+          latitude,
+          longitude,
+          destinationLat,
+          destinationLng,
+        );
+        if (meters <= _autoCompleteRadiusMeters) {
+          body['status'] = 'completed';
+          body['eta_minutes'] = 0;
+        }
+      }
       // Heal missing relation so the customer-side filter & rules light up.
       if (record.getStringValue('driver').trim().isEmpty) {
         body['driver'] = userId;
       }
       try {
         await _client.collection('tow_requests').update(record.id, body: body);
+        if (body['status'] == 'completed') {
+          completedAny = true;
+        }
       } on ClientException {
         // Skip rows that reject the update; other rows can still succeed.
       }
     }
+    return completedAny;
+  }
+
+  double? _recordCoordinate(RecordModel record, String field) {
+    final value = record.getDoubleValue(field);
+    return value == 0 ? null : value;
+  }
+
+  double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
+    const earthRadius = 6371000.0;
+    final dLat = (lat2 - lat1) * math.pi / 180.0;
+    final dLng = (lng2 - lng1) * math.pi / 180.0;
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180.0) *
+            math.cos(lat2 * math.pi / 180.0) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
+    return 2 * earthRadius * math.asin(math.sqrt(a));
   }
 
   Future<TowRequest> updateTowRequestAsDriver({
@@ -806,12 +849,16 @@ class PocketBaseService {
     if (!isCurrentUserDriver) {
       throw Exception('Driver role is required.');
     }
+    if (status?.trim() == 'completed') {
+      throw Exception(
+        'Trips complete automatically when the driver reaches the destination.',
+      );
+    }
 
     if (attachDriverUser && _userId != null) {
       try {
-        final existing = await _client
-            .collection('tow_requests')
-            .getOne(requestId);
+        final existing =
+            await _client.collection('tow_requests').getOne(requestId);
         if (existing.getStringValue('user') == _userId) {
           throw Exception('You cannot accept your own tow request.');
         }
@@ -861,6 +908,25 @@ class PocketBaseService {
       }
     }
     return TowRequest.fromRecord(record);
+  }
+
+  Future<void> updateTowRequestCoordinates({
+    required String requestId,
+    double? pickupLat,
+    double? pickupLng,
+    double? destinationLat,
+    double? destinationLng,
+  }) async {
+    final body = <String, dynamic>{
+      if (pickupLat != null) 'pickup_lat': pickupLat,
+      if (pickupLng != null) 'pickup_lng': pickupLng,
+      if (destinationLat != null) 'destination_lat': destinationLat,
+      if (destinationLng != null) 'destination_lng': destinationLng,
+    };
+    if (body.isEmpty) {
+      return;
+    }
+    await _client.collection('tow_requests').update(requestId, body: body);
   }
 
   String _escapeFilterValue(String value) {
@@ -1155,9 +1221,8 @@ class PocketBaseService {
     }
 
     if (filters.isNotEmpty) {
-      final filter = filters.length == 1
-          ? filters.first
-          : '(${filters.join(' || ')})';
+      final filter =
+          filters.length == 1 ? filters.first : '(${filters.join(' || ')})';
       try {
         final result =
             await _client.collection(_driverProfilesCollection).getList(
@@ -1167,7 +1232,8 @@ class PocketBaseService {
                   sort: '-updated',
                 );
         if (result.items.isNotEmpty) {
-          final phone = result.items.first.getStringValue('driver_phone').trim();
+          final phone =
+              result.items.first.getStringValue('driver_phone').trim();
           if (phone.isNotEmpty) return phone;
           final userId = result.items.first.getStringValue('user').trim();
           if (userId.isNotEmpty) {
@@ -1262,9 +1328,9 @@ class PocketBaseService {
     }
 
     return _client.collection('driver_reports').create(
-      body: body,
-      files: files,
-    );
+          body: body,
+          files: files,
+        );
   }
 
   Future<RecordModel> applyAiReportVerdict({
@@ -1344,15 +1410,15 @@ class PocketBaseService {
     final RecordModel record;
     if (existing == null) {
       record = await _client.collection('driver_applications').create(
-        body: body,
-        files: files,
-      );
+            body: body,
+            files: files,
+          );
     } else {
       record = await _client.collection('driver_applications').update(
-        existing.id,
-        body: body,
-        files: files,
-      );
+            existing.id,
+            body: body,
+            files: files,
+          );
     }
 
     try {

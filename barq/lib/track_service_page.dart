@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'models/place_result.dart';
@@ -9,6 +11,14 @@ import 'services/bahrain_map_service.dart';
 import 'services/pocketbase_service.dart';
 import 'settings.dart';
 import 'widgets/barq_live_map.dart';
+
+class _RoutePlan {
+  const _RoutePlan(this.start, this.end, {required this.leg});
+
+  final LatLng start;
+  final LatLng end;
+  final String leg;
+}
 
 const Color _kBarqYellow = Color(0xFFF4C21E);
 const Color _kBarqNavy = Color(0xFF0B1220);
@@ -107,6 +117,9 @@ class _TrackServicePageState extends State<TrackServicePage> {
   PlaceResult? _destinationPlace;
   PlaceResult? _driverPlace;
   RouteInfo? _routeInfo;
+  LatLng? _lastRouteStart;
+  String? _lastRouteLeg;
+  static const double _kRouteRebuildMeters = 200.0;
 
   AppLanguage get _language => widget.language;
 
@@ -242,6 +255,14 @@ class _TrackServicePageState extends State<TrackServicePage> {
     TowRequest request, {
     required bool refreshMap,
   }) {
+    final previousDriverLat = _driverLat;
+    final previousDriverLng = _driverLng;
+    final hasFreshDriverLocation =
+        request.driverLat != null && request.driverLng != null;
+    final driverLocationChanged = hasFreshDriverLocation &&
+        (request.driverLat != previousDriverLat ||
+            request.driverLng != previousDriverLng);
+
     setState(() {
       _driverName = _normalizedText(request.driverName) ?? _driverName;
       _driverRating = request.driverRating ?? _driverRating;
@@ -260,16 +281,13 @@ class _TrackServicePageState extends State<TrackServicePage> {
       _pickupLng = request.pickupLng ?? _pickupLng;
       _destinationLat = request.destinationLat ?? _destinationLat;
       _destinationLng = request.destinationLng ?? _destinationLng;
-      final driverLatChanged =
-          request.driverLat != null && request.driverLat != _driverLat;
-      final driverLngChanged =
-          request.driverLng != null && request.driverLng != _driverLng;
       _driverLat = request.driverLat ?? _driverLat;
       _driverLng = request.driverLng ?? _driverLng;
       _driverPhone = request.driverPhone ?? _driverPhone;
       _driverUserId = request.driverUserId ?? _driverUserId;
-      if (driverLatChanged || driverLngChanged) {
+      if (driverLocationChanged) {
         _lastDriverUpdate = DateTime.now();
+        _driverPlace = _driverPlaceFromCoordinates();
       }
       if (_status == 'completed' || _status == 'cancelled') {
         _remainingDistanceKm = 0;
@@ -277,7 +295,11 @@ class _TrackServicePageState extends State<TrackServicePage> {
     });
 
     if (refreshMap) {
-      _hydrateMap();
+      _hydrateMap(
+        showLoader: !driverLocationChanged ||
+            _pickupPlace == null ||
+            _destinationPlace == null,
+      );
     }
   }
 
@@ -286,16 +308,30 @@ class _TrackServicePageState extends State<TrackServicePage> {
     return normalized.isEmpty ? null : normalized;
   }
 
-  Future<void> _hydrateMap() async {
+  PlaceResult? _driverPlaceFromCoordinates() {
+    if (_driverLat == null || _driverLng == null) {
+      return null;
+    }
+    return PlaceResult(
+      title: _driverName.isEmpty ? _driverLabel : _driverName,
+      subtitle: _driverMarkerSubtitle,
+      latitude: _driverLat!,
+      longitude: _driverLng!,
+    );
+  }
+
+  Future<void> _hydrateMap({bool showLoader = true}) async {
     if (!mounted) {
       return;
     }
 
     final token = ++_mapHydrationToken;
-    setState(() {
-      _loadingMap = true;
-      _mapNotice = null;
-    });
+    if (showLoader) {
+      setState(() {
+        _loadingMap = true;
+        _mapNotice = null;
+      });
+    }
 
     final pickup = await _resolvePlace(
       label: _pickupLocation,
@@ -308,26 +344,33 @@ class _TrackServicePageState extends State<TrackServicePage> {
       longitude: _destinationLng,
     );
 
-    RouteInfo? route;
-    if (pickup != null && destination != null) {
-      try {
-        route = await BahrainMapService.buildRoute(
-          start: pickup.latLng,
-          end: destination.latLng,
-        );
-      } catch (_) {
-        route = null;
-      }
-    }
-
     PlaceResult? driver;
-    if (_driverLat != null && _driverLng != null) {
-      driver = PlaceResult(
-        title: _driverName.isEmpty ? _driverLabel : _driverName,
-        subtitle: _driverMarkerSubtitle,
-        latitude: _driverLat!,
-        longitude: _driverLng!,
-      );
+    driver = _driverPlaceFromCoordinates();
+
+    final routePlan = _selectRoutePlan(
+      pickup: pickup,
+      destination: destination,
+      driver: driver,
+    );
+    RouteInfo? route = _routeInfo;
+    if (routePlan != null) {
+      final shouldRebuild = _shouldRebuildRoute(routePlan);
+      if (shouldRebuild || route == null) {
+        try {
+          route = await BahrainMapService.buildRoute(
+            start: routePlan.start,
+            end: routePlan.end,
+          );
+          _lastRouteStart = routePlan.start;
+          _lastRouteLeg = routePlan.leg;
+        } catch (_) {
+          route = null;
+        }
+      }
+    } else {
+      route = null;
+      _lastRouteStart = null;
+      _lastRouteLeg = null;
     }
 
     if (!mounted || token != _mapHydrationToken) {
@@ -347,6 +390,66 @@ class _TrackServicePageState extends State<TrackServicePage> {
         driver: driver,
       );
     });
+  }
+
+  bool _shouldRebuildRoute(_RoutePlan plan) {
+    if (_lastRouteLeg != plan.leg) return true;
+    final last = _lastRouteStart;
+    if (last == null) return true;
+    final meters = _haversineMeters(
+      last.latitude,
+      last.longitude,
+      plan.start.latitude,
+      plan.start.longitude,
+    );
+    return meters >= _kRouteRebuildMeters;
+  }
+
+  double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
+    const earthRadius = 6371000.0;
+    final dLat = (lat2 - lat1) * math.pi / 180.0;
+    final dLng = (lng2 - lng1) * math.pi / 180.0;
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * math.pi / 180.0) *
+            math.cos(lat2 * math.pi / 180.0) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
+    return 2 * earthRadius * math.asin(math.sqrt(a));
+  }
+
+  double? _liveDriverDistanceKm() {
+    if (_driverLat == null || _driverLng == null) return null;
+    if (_status == 'en_route' &&
+        _destinationLat != null &&
+        _destinationLng != null) {
+      return _haversineMeters(
+              _driverLat!, _driverLng!, _destinationLat!, _destinationLng!) /
+          1000.0;
+    }
+    if (_pickupLat != null && _pickupLng != null) {
+      return _haversineMeters(
+              _driverLat!, _driverLng!, _pickupLat!, _pickupLng!) /
+          1000.0;
+    }
+    return null;
+  }
+
+  _RoutePlan? _selectRoutePlan({
+    required PlaceResult? pickup,
+    required PlaceResult? destination,
+    required PlaceResult? driver,
+  }) {
+    if (driver != null && destination != null && _status == 'en_route') {
+      return _RoutePlan(driver.latLng, destination.latLng,
+          leg: 'to_destination');
+    }
+    if (driver != null && pickup != null && _status == 'assigned') {
+      return _RoutePlan(driver.latLng, pickup.latLng, leg: 'to_pickup');
+    }
+    if (pickup != null && destination != null) {
+      return _RoutePlan(pickup.latLng, destination.latLng, leg: 'preview');
+    }
+    return null;
   }
 
   Future<PlaceResult?> _resolvePlace({
@@ -436,6 +539,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
   String get _refreshLabel => _isArabic ? 'تحديث' : 'Refresh';
 
   String get _lastUpdateLabel {
+    final liveKm = _liveDriverDistanceKm();
     final stamp = _lastDriverUpdate;
     if (stamp == null) {
       if (_realtimeReady) {
@@ -444,22 +548,31 @@ class _TrackServicePageState extends State<TrackServicePage> {
       return _realtimeFallbackLabel;
     }
     final delta = DateTime.now().difference(stamp);
-    if (delta.inSeconds < 5) {
-      return _isArabic ? 'الآن' : 'Just now';
-    }
-    if (delta.inSeconds < 60) {
+    final ageLabel = delta.inSeconds < 5
+        ? (_isArabic ? 'الآن' : 'now')
+        : delta.inSeconds < 60
+            ? (_isArabic
+                ? 'قبل ${delta.inSeconds} ثانية'
+                : '${delta.inSeconds}s ago')
+            : delta.inMinutes < 60
+                ? (_isArabic
+                    ? 'قبل ${delta.inMinutes} دقيقة'
+                    : '${delta.inMinutes} min ago')
+                : (_isArabic
+                    ? 'قبل ${delta.inHours} ساعة'
+                    : '${delta.inHours}h ago');
+    if (liveKm != null) {
+      final target = _status == 'en_route'
+          ? (_isArabic ? 'الوجهة' : 'destination')
+          : (_isArabic ? 'الالتقاط' : 'pickup');
+      final distance = liveKm < 1
+          ? '${(liveKm * 1000).round()} m'
+          : '${liveKm.toStringAsFixed(1)} km';
       return _isArabic
-          ? 'قبل ${delta.inSeconds} ثانية'
-          : '${delta.inSeconds}s ago';
+          ? '$distance من $target • $ageLabel'
+          : '$distance to $target • $ageLabel';
     }
-    if (delta.inMinutes < 60) {
-      return _isArabic
-          ? 'قبل ${delta.inMinutes} دقيقة'
-          : '${delta.inMinutes} min ago';
-    }
-    return _isArabic
-        ? 'قبل ${delta.inHours} ساعة'
-        : '${delta.inHours}h ago';
+    return ageLabel;
   }
 
   String get _realtimeFallbackLabel => _isArabic
@@ -476,6 +589,12 @@ class _TrackServicePageState extends State<TrackServicePage> {
     }
     if (_status == 'cancelled') {
       return _isArabic ? 'تم إلغاء الطلب' : 'Request cancelled';
+    }
+    if (_status == 'en_route' && _driverPlace != null) {
+      return _isArabic ? 'في الطريق إلى الوجهة' : 'Heading to destination';
+    }
+    if (_status == 'assigned' && _driverPlace != null) {
+      return _isArabic ? 'السائق قادم إليك' : 'Driver heading to pickup';
     }
     if (_driverPlace != null) {
       return _isArabic ? 'تتبع مباشر داخل البحرين' : 'Live Bahrain tracking';
@@ -591,9 +710,10 @@ class _TrackServicePageState extends State<TrackServicePage> {
       final launched = await launchUrl(uri);
       if (!launched && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_isArabic
-              ? 'تعذر فتح تطبيق الاتصال. الرقم: $sanitized'
-              : 'Could not open dialer. Number: $sanitized')),
+          SnackBar(
+              content: Text(_isArabic
+                  ? 'تعذر فتح تطبيق الاتصال. الرقم: $sanitized'
+                  : 'Could not open dialer. Number: $sanitized')),
         );
       }
     } catch (e) {
@@ -735,9 +855,8 @@ class _TrackServicePageState extends State<TrackServicePage> {
                           icon: _lastDriverUpdate == null
                               ? Icons.cloud_outlined
                               : Icons.gps_fixed,
-                          label: _isArabic
-                              ? 'آخر موقع للسائق'
-                              : 'Last driver fix',
+                          label:
+                              _isArabic ? 'آخر موقع للسائق' : 'Last driver fix',
                           value: _lastUpdateLabel,
                           compact: true,
                         ),
@@ -927,9 +1046,8 @@ class _TrackServicePageState extends State<TrackServicePage> {
                     const SizedBox(height: 10),
                     _priceRow(
                       context,
-                      label: _isArabic
-                          ? 'المسافة المتبقية'
-                          : 'Remaining distance',
+                      label:
+                          _isArabic ? 'المسافة المتبقية' : 'Remaining distance',
                       valueText: _isArabic
                           ? '${_remainingDistanceKm.toStringAsFixed(1)} كم'
                           : '${_remainingDistanceKm.toStringAsFixed(1)} km',
@@ -1180,6 +1298,8 @@ class _TrackServicePageState extends State<TrackServicePage> {
       ),
     );
   }
+
+  // _RoutePlan kept as a fileprivate class below.
 
   Widget _priceRow(
     BuildContext context, {
