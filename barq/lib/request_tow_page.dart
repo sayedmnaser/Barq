@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:pocketbase/pocketbase.dart';
@@ -50,6 +48,7 @@ class RequestTowPage extends StatefulWidget {
 
 class _RequestTowPageState extends State<RequestTowPage> {
   static const Distance _distanceCalculator = Distance();
+  static const Duration _driverLocationFreshness = Duration(minutes: 5);
 
   final PocketBaseService _pocketBaseService = PocketBaseService.instance;
   final TextEditingController _pickupController = TextEditingController();
@@ -69,6 +68,10 @@ class _RequestTowPageState extends State<RequestTowPage> {
   bool _shareLocationEnabled = true;
   String? _routeError;
   List<NearbyDriver> _nearbyDrivers = const <NearbyDriver>[];
+  String? _selectedDriverId;
+  bool _mapTapSetsPickup = false;
+  bool _isResolvingMapTap = false;
+  bool _isDriverProfilesRealtimeSubscribed = false;
   Timer? _nearbyDriversTimer;
 
   bool get _isArabic => widget.language == AppLanguage.ar;
@@ -83,15 +86,33 @@ class _RequestTowPageState extends State<RequestTowPage> {
         _loadNearbyDrivers(userPlace: pickup, silent: true);
       }
     });
+    _subscribeToDriverProfileRealtime();
   }
 
   @override
   void dispose() {
     _nearbyDriversTimer?.cancel();
+    if (_isDriverProfilesRealtimeSubscribed) {
+      _pocketBaseService.unsubscribeDriverProfiles();
+    }
     _pickupController.dispose();
     _destinationController.dispose();
     _detailsController.dispose();
     super.dispose();
+  }
+
+  Future<void> _subscribeToDriverProfileRealtime() async {
+    try {
+      await _pocketBaseService.subscribeDriverProfiles(() {
+        final pickup = _pickupPlace;
+        if (mounted && pickup != null && !_isSubmitting) {
+          _loadNearbyDrivers(userPlace: pickup, silent: true);
+        }
+      });
+      _isDriverProfilesRealtimeSubscribed = true;
+    } catch (_) {
+      // The timer remains as a fallback when realtime is unavailable.
+    }
   }
 
   Future<void> _loadLocationPreferences() async {
@@ -107,6 +128,21 @@ class _RequestTowPageState extends State<RequestTowPage> {
 
   NearbyDriver? get _nearestDriver =>
       _nearbyDrivers.isEmpty ? null : _nearbyDrivers.first;
+
+  NearbyDriver? get _selectedDriver {
+    final selectedId = _selectedDriverId;
+    if (selectedId == null) {
+      return null;
+    }
+    for (final driver in _nearbyDrivers) {
+      if (driver.id == selectedId) {
+        return driver;
+      }
+    }
+    return null;
+  }
+
+  NearbyDriver? get _requestDriver => _selectedDriver ?? _nearestDriver;
 
   Future<void> _initializePickupFromCache() async {
     if (!_shareLocationEnabled) {
@@ -209,6 +245,67 @@ class _RequestTowPageState extends State<RequestTowPage> {
     }
 
     await _refreshRoute();
+  }
+
+  Future<void> _handleMapTap(LatLng point) async {
+    if (_isResolvingMapTap) {
+      return;
+    }
+
+    setState(() {
+      _isResolvingMapTap = true;
+    });
+
+    try {
+      final reversed = await BahrainMapService.reverseGeocode(
+        latitude: point.latitude,
+        longitude: point.longitude,
+      );
+      final fallbackTitle =
+          _mapTapSetsPickup ? 'Pinned pickup' : 'Pinned destination';
+      final place = (reversed ??
+              PlaceResult(
+                title: fallbackTitle,
+                subtitle:
+                    '${point.latitude.toStringAsFixed(5)}, ${point.longitude.toStringAsFixed(5)}',
+                latitude: point.latitude,
+                longitude: point.longitude,
+              ))
+          .copyWith(
+        title: (reversed?.title.trim().isNotEmpty ?? false)
+            ? reversed!.title
+            : fallbackTitle,
+        latitude: point.latitude,
+        longitude: point.longitude,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        if (_mapTapSetsPickup) {
+          _pickupPlace = place;
+          _pickupController.text = place.label;
+        } else {
+          _destinationPlace = place;
+          _destinationController.text = place.label;
+        }
+      });
+
+      if (_mapTapSetsPickup) {
+        await AppPreferencesService.saveLastPickupPlace(place);
+        await _loadNearbyDrivers(userPlace: place);
+      }
+
+      await _refreshRoute();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isResolvingMapTap = false;
+        });
+      }
+    }
   }
 
   Future<void> _refreshRoute() async {
@@ -358,7 +455,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
           .where((driver) => driver.distanceKm <= 12.0)
           .toList(growable: false);
 
-      candidates.sort((a, b) => _aiScore(b).compareTo(_aiScore(a)));
+      candidates.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
       final topThree = candidates.take(3).toList(growable: false);
 
       if (!mounted) {
@@ -366,6 +463,10 @@ class _RequestTowPageState extends State<RequestTowPage> {
       }
       setState(() {
         _nearbyDrivers = topThree;
+        if (_selectedDriverId != null &&
+            !topThree.any((driver) => driver.id == _selectedDriverId)) {
+          _selectedDriverId = null;
+        }
         _isLoadingNearbyDrivers = false;
       });
     } catch (_) {
@@ -377,6 +478,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
       }
       setState(() {
         _nearbyDrivers = const <NearbyDriver>[];
+        _selectedDriverId = null;
         _isLoadingNearbyDrivers = false;
       });
     }
@@ -396,6 +498,9 @@ class _RequestTowPageState extends State<RequestTowPage> {
       // Skip drivers that explicitly toggled themselves offline.
       if (record.data.containsKey('is_available') &&
           record.getBoolValue('is_available') == false) {
+        continue;
+      }
+      if (!_hasFreshDriverLocation(record)) {
         continue;
       }
       final lat = _extractCoordinate(record, const <String>[
@@ -463,13 +568,13 @@ class _RequestTowPageState extends State<RequestTowPage> {
     return drivers;
   }
 
-  double _aiScore(NearbyDriver driver) {
-    final distanceScore = 1 / (0.15 + driver.distanceKm);
-    final ratingScore = (driver.rating.clamp(0, 5) / 5.0);
-    final experienceScore = (math.min(driver.totalRides, 1500) / 1500);
-    return (distanceScore * 0.75) +
-        (ratingScore * 0.2) +
-        (experienceScore * 0.05);
+  bool _hasFreshDriverLocation(RecordModel record) {
+    final updated = DateTime.tryParse(record.getStringValue('updated'));
+    if (updated == null) {
+      return false;
+    }
+    return DateTime.now().toUtc().difference(updated.toUtc()) <=
+        _driverLocationFreshness;
   }
 
   double? _extractCoordinate(RecordModel record, List<String> keys) {
@@ -536,10 +641,23 @@ class _RequestTowPageState extends State<RequestTowPage> {
     return '';
   }
 
-  Future<void> _submitRequest(
-    AppStrings strings, {
-    NearbyDriver? preferredDriver,
-  }) async {
+  List<String> get _candidateDriverUserIds {
+    final seen = <String>{};
+    final ids = <String>[];
+    for (final driver in _nearbyDrivers) {
+      final id = driver.userId?.trim() ?? '';
+      if (id.isEmpty || !seen.add(id)) {
+        continue;
+      }
+      ids.add(id);
+      if (ids.length == 3) {
+        break;
+      }
+    }
+    return ids;
+  }
+
+  Future<void> _submitRequest(AppStrings strings) async {
     if (_pickupPlace == null || _destinationPlace == null) {
       final message = _isArabic
           ? 'يرجى اختيار موقع الالتقاط والوجهة.'
@@ -555,24 +673,30 @@ class _RequestTowPageState extends State<RequestTowPage> {
     });
 
     try {
+      final chosenDriver = _requestDriver;
+      final chosenDriverUserId = chosenDriver?.userId?.trim();
+      final hasChosenDriver =
+          chosenDriverUserId != null && chosenDriverUserId.isNotEmpty;
       final towRequest = await _pocketBaseService.createTowRequest(
         pickupLocation: _pickupController.text.trim(),
         destination: _destinationController.text.trim(),
         vehicleType: _vehicleLabel(strings, _vehicleKind),
         details: _detailsController.text.trim(),
         serviceTiming: _serviceTiming == 0 ? 'immediate' : 'scheduled',
-        status: preferredDriver == null ? 'pending' : 'assigned',
+        status: hasChosenDriver ? 'assigned' : 'pending',
         pickupLat: _pickupPlace?.latitude,
         pickupLng: _pickupPlace?.longitude,
         destinationLat: _destinationPlace?.latitude,
         destinationLng: _destinationPlace?.longitude,
-        driverLat: preferredDriver?.place.latitude,
-        driverLng: preferredDriver?.place.longitude,
-        driverName: preferredDriver?.name,
-        driverUserId: preferredDriver?.userId,
-        driverRating: preferredDriver?.rating,
-        driverTotalRides: preferredDriver?.totalRides,
-        licensePlate: preferredDriver?.licensePlate,
+        driverLat: chosenDriver?.place.latitude,
+        driverLng: chosenDriver?.place.longitude,
+        driverName: chosenDriver?.name,
+        driverUserId: chosenDriverUserId,
+        driverRating: chosenDriver?.rating,
+        driverTotalRides: chosenDriver?.totalRides,
+        licensePlate: chosenDriver?.licensePlate,
+        candidateDriverIds:
+            hasChosenDriver ? const <String>[] : _candidateDriverUserIds,
         distanceKm: _distanceKm == 0 ? null : _distanceKm,
         etaMinutes: _etaMinutes,
         baseFare: _baseFare,
@@ -603,8 +727,8 @@ class _RequestTowPageState extends State<RequestTowPage> {
             pickupLng: _pickupPlace?.longitude,
             destinationLat: _destinationPlace?.latitude,
             destinationLng: _destinationPlace?.longitude,
-            driverLat: towRequest.driverLat ?? preferredDriver?.place.latitude,
-            driverLng: towRequest.driverLng ?? preferredDriver?.place.longitude,
+            driverLat: towRequest.driverLat ?? chosenDriver?.place.latitude,
+            driverLng: towRequest.driverLng ?? chosenDriver?.place.longitude,
             language: widget.language,
           ),
         ),
@@ -637,14 +761,14 @@ class _RequestTowPageState extends State<RequestTowPage> {
   String get _mapHeadline =>
       _isArabic ? 'خريطة البحرين المباشرة' : 'Live Bahrain map';
   String get _mapSubline {
-    final nearest = _nearestDriver;
-    final nearestText = nearest == null
+    final selected = _requestDriver;
+    final nearestText = selected == null
         ? (_isArabic
             ? 'لا يوجد سائقون قريبون الآن.'
             : 'No nearby drivers found yet.')
         : (_isArabic
-            ? 'أقرب سائق: ${nearest.name} (${nearest.distanceKm.toStringAsFixed(1)} كم)'
-            : 'Closest driver: ${nearest.name} (${nearest.distanceKm.toStringAsFixed(1)} km)');
+            ? 'السائق المحدد: ${selected.name} (${selected.distanceKm.toStringAsFixed(1)} كم)'
+            : 'Selected driver: ${selected.name} (${selected.distanceKm.toStringAsFixed(1)} km)');
 
     if (_pickupPlace != null &&
         _destinationPlace != null &&
@@ -676,7 +800,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
               height: 280,
               pickup: _pickupPlace,
               destination: _destinationPlace,
-              driver: _nearestDriver?.place,
+              driver: _requestDriver?.place,
               nearbyDrivers:
                   _nearbyDrivers.map((driver) => driver.place).toList(),
               routePoints: _routeInfo?.points ?? const <LatLng>[],
@@ -684,44 +808,22 @@ class _RequestTowPageState extends State<RequestTowPage> {
               subline: _isLoadingRoute
                   ? (_isArabic ? 'جاري تحميل المسار...' : 'Loading route...')
                   : _mapSubline,
+              onMapTap: _handleMapTap,
             ),
             const SizedBox(height: 8),
-            if (_isLoadingNearbyDrivers)
+            _mapTapModeControl(context, strings),
+            const SizedBox(height: 8),
+            if (_isLoadingNearbyDrivers || _isResolvingMapTap)
               const LinearProgressIndicator(minHeight: 3),
-            if (_nearestDriver != null) ...[
+            if (_nearbyDrivers.isNotEmpty) ...[
               const SizedBox(height: 10),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardColor,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Theme.of(context).dividerColor),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.local_shipping_outlined),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _isArabic
-                            ? 'أقرب سائق: ${_nearestDriver!.name} • ${_nearestDriver!.distanceKm.toStringAsFixed(1)} كم'
-                            : 'Closest driver: ${_nearestDriver!.name} • ${_nearestDriver!.distanceKm.toStringAsFixed(1)} km',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _driverChoices(context),
               const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: _isSubmitting
-                      ? null
-                      : () => _submitRequest(
-                            strings,
-                            preferredDriver: _nearestDriver,
-                          ),
+                  onPressed:
+                      _isSubmitting ? null : () => _submitRequest(strings),
                   icon: const Icon(Icons.local_shipping),
                   label: _isSubmitting
                       ? const SizedBox(
@@ -882,12 +984,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: _isSubmitting
-                    ? null
-                    : () => _submitRequest(
-                          strings,
-                          preferredDriver: _nearestDriver,
-                        ),
+                onPressed: _isSubmitting ? null : () => _submitRequest(strings),
                 child: _isSubmitting
                     ? const SizedBox(
                         width: 20,
@@ -899,6 +996,209 @@ class _RequestTowPageState extends State<RequestTowPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _mapTapModeControl(BuildContext context, AppStrings strings) {
+    return SegmentedButton<bool>(
+      showSelectedIcon: false,
+      segments: [
+        ButtonSegment<bool>(
+          value: true,
+          icon: const Icon(Icons.my_location_outlined),
+          label:
+              Text(strings.text('pickupLocation').replaceAll('*', '').trim()),
+        ),
+        ButtonSegment<bool>(
+          value: false,
+          icon: const Icon(Icons.flag_outlined),
+          label: Text(strings.text('destination').replaceAll('*', '').trim()),
+        ),
+      ],
+      selected: <bool>{_mapTapSetsPickup},
+      onSelectionChanged: (selection) {
+        if (selection.isEmpty) {
+          return;
+        }
+        setState(() {
+          _mapTapSetsPickup = selection.first;
+        });
+      },
+    );
+  }
+
+  Widget _driverChoices(BuildContext context) {
+    final selected = _requestDriver;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _isArabic
+                ? 'اختر من أقرب 3 سائقين'
+                : 'Choose from the 3 closest drivers',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _isArabic
+                ? 'اضغط على سائق، أو اضغط طلب الشاحنة لاختيار الأقرب.'
+                : 'Tap a driver, or press Request This Truck Now for the closest one.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).hintColor,
+                ),
+          ),
+          const SizedBox(height: 10),
+          ..._nearbyDrivers.asMap().entries.map((entry) {
+            final index = entry.key;
+            final driver = entry.value;
+            final isSelected = selected?.id == driver.id;
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: index == _nearbyDrivers.length - 1 ? 0 : 8,
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () {
+                    setState(() {
+                      _selectedDriverId = driver.id;
+                    });
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? colorScheme.primary.withValues(alpha: 0.12)
+                          : colorScheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isSelected
+                            ? colorScheme.primary
+                            : Theme.of(context).dividerColor,
+                        width: isSelected ? 1.6 : 1,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 21,
+                          backgroundColor: isSelected
+                              ? colorScheme.primary
+                              : colorScheme.primary.withValues(alpha: 0.12),
+                          child: Icon(
+                            Icons.local_shipping_outlined,
+                            color: isSelected
+                                ? colorScheme.onPrimary
+                                : colorScheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      driver.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleSmall
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                    ),
+                                  ),
+                                  if (index == 0)
+                                    _smallChoicePill(
+                                      context,
+                                      _isArabic ? 'الأقرب' : 'Closest',
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                children: [
+                                  Text(
+                                    '${driver.distanceKm.toStringAsFixed(1)} km',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                  if (driver.rating > 0)
+                                    Text(
+                                      '${driver.rating.toStringAsFixed(1)} rating',
+                                      style:
+                                          Theme.of(context).textTheme.bodySmall,
+                                    ),
+                                  Text(
+                                    '${driver.totalRides} rides',
+                                    style:
+                                        Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                  if ((driver.licensePlate ?? '').isNotEmpty)
+                                    Text(
+                                      'Plate ${driver.licensePlate}',
+                                      style:
+                                          Theme.of(context).textTheme.bodySmall,
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Icon(
+                          isSelected
+                              ? Icons.check_circle
+                              : Icons.radio_button_unchecked,
+                          color: isSelected
+                              ? colorScheme.primary
+                              : Theme.of(context).hintColor,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _smallChoicePill(BuildContext context, String label) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: colorScheme.primary.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: colorScheme.primary,
+              fontWeight: FontWeight.w800,
+            ),
       ),
     );
   }

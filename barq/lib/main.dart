@@ -454,6 +454,7 @@ class _HomePageState extends State<HomePage> {
   bool _isLoading = true;
   bool _isRealtimeSubscribed = false;
   int _tabIndex = 0;
+  Timer? _requestRefreshTimer;
 
   @override
   void initState() {
@@ -461,10 +462,14 @@ class _HomePageState extends State<HomePage> {
     _loadRequests();
     _subscribeToRealtimeUpdates();
     _warmupPickupLocation();
+    _requestRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _loadRequests(silent: true);
+    });
   }
 
   @override
   void dispose() {
+    _requestRefreshTimer?.cancel();
     if (_isRealtimeSubscribed) {
       _pocketBaseService.unsubscribeCurrentUserRequests();
     }
@@ -475,7 +480,7 @@ class _HomePageState extends State<HomePage> {
     try {
       await _pocketBaseService.subscribeCurrentUserRequests(() {
         if (mounted) {
-          _loadRequests();
+          _loadRequests(silent: true);
         }
       });
       _isRealtimeSubscribed = true;
@@ -514,10 +519,12 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadRequests() async {
-    setState(() {
-      _isLoading = true;
-    });
+  Future<void> _loadRequests({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+      });
+    }
 
     try {
       final active = await _pocketBaseService.getActiveRequests();

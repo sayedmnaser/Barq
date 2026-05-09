@@ -41,6 +41,16 @@ class AppConfig {
     defaultValue: 'https://openrouter.ai/api/v1',
   );
 
+  static const String googleMapsKey = String.fromEnvironment(
+    'GOOGLE_MAPS_KEY',
+    defaultValue: '',
+  );
+
+  static const String googleMapsBaseUrl = String.fromEnvironment(
+    'GOOGLE_MAPS_BASE_URL',
+    defaultValue: 'https://maps.googleapis.com',
+  );
+
   static const String geminiApiKey = String.fromEnvironment(
     'GEMINI_API_KEY',
     defaultValue: '',
@@ -84,6 +94,8 @@ class AppConfig {
   static String get normalizedGeminiBaseUrl =>
       _stripTrailingSlash(geminiBaseUrl);
   static String get normalizedGroqBaseUrl => _stripTrailingSlash(groqBaseUrl);
+  static String get normalizedGoogleMapsBaseUrl =>
+      _stripTrailingSlash(googleMapsBaseUrl);
   static bool get usesPocketBasePlaceholder =>
       normalizedPocketBaseUrl == publicApiPlaceholder;
 

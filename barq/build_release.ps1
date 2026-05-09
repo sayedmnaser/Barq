@@ -4,6 +4,7 @@ param(
   [string]$GroqModel = "llama-3.1-8b-instant",
   [string]$GeminiApiKey = $env:GEMINI_API_KEY,
   [string]$GeminiModel = "gemini-2.5-flash",
+  [string]$GoogleMapsKey = $env:GOOGLE_MAPS_KEY,
   [ValidateSet("apk", "run")]
   [string]$Target = "apk",
   [switch]$DryRun
@@ -54,9 +55,14 @@ try {
     $defines += "--dart-define=GROQ_MODEL=$GroqModel"
   }
 
+  if (-not [string]::IsNullOrWhiteSpace($GoogleMapsKey)) {
+    $defines += "--dart-define=GOOGLE_MAPS_KEY=$GoogleMapsKey"
+  }
+
   $providers = @()
   if (-not [string]::IsNullOrWhiteSpace($GeminiApiKey)) { $providers += "Gemini=$GeminiModel" }
   if (-not [string]::IsNullOrWhiteSpace($GroqApiKey)) { $providers += "Groq=$GroqModel" }
+  if (-not [string]::IsNullOrWhiteSpace($GoogleMapsKey)) { $providers += "GoogleMaps=Directions+Geocode" }
   $providerList = ($providers -join ", ")
 
   if ($Target -eq "run") {

@@ -991,9 +991,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
                           context,
                           icon: Icons.history_toggle_off,
                           label: _isArabic ? 'الرحلات' : 'Rides',
-                          value: _driverTotalRides > 0
-                              ? '$_driverTotalRides'
-                              : '--',
+                          value: '$_driverTotalRides',
                         ),
                       ),
                     ],

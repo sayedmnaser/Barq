@@ -18,7 +18,6 @@ import 'services/location_service.dart';
 import 'services/moderation_ai_service.dart';
 import 'services/pocketbase_service.dart';
 import 'settings.dart';
-import 'track_service_page.dart';
 import 'widgets/barq_live_map.dart';
 
 const Color _kDriverYellow = Color(0xFFF4C21E);
@@ -74,6 +73,7 @@ class _DriverPageState extends State<DriverPage> {
   bool _isLoadingMap = false;
   bool _isScanningPlate = false;
   bool _isAvailable = true;
+  bool _isTowRealtimeSubscribed = false;
   late final bool _hasDriverAccess;
   Timer? _refreshTimer;
   Timer? _driverLocationTimer;
@@ -92,6 +92,7 @@ class _DriverPageState extends State<DriverPage> {
 
     _loadDeclinedIds();
     _bootstrapDriverData();
+    _subscribeToRealtimeRequests();
 
     _refreshTimer = Timer.periodic(const Duration(seconds: 12), (_) {
       _loadRequests(silent: true);
@@ -109,6 +110,9 @@ class _DriverPageState extends State<DriverPage> {
   void dispose() {
     _refreshTimer?.cancel();
     _driverLocationTimer?.cancel();
+    if (_isTowRealtimeSubscribed) {
+      _pocketBaseService.unsubscribeDriverTowRequests();
+    }
     _driverNameController.dispose();
     _licensePlateController.dispose();
     _driverRatingController.dispose();
@@ -137,6 +141,19 @@ class _DriverPageState extends State<DriverPage> {
   Future<void> _bootstrapDriverData() async {
     await _loadDriverProfileDefaults();
     await _loadRequests();
+  }
+
+  Future<void> _subscribeToRealtimeRequests() async {
+    try {
+      await _pocketBaseService.subscribeDriverTowRequests(() {
+        if (mounted) {
+          _loadRequests(silent: true);
+        }
+      });
+      _isTowRealtimeSubscribed = true;
+    } catch (_) {
+      // The periodic refresh remains as a fallback.
+    }
   }
 
   String? _resolveOwnPhone() {
@@ -260,7 +277,7 @@ class _DriverPageState extends State<DriverPage> {
         defaultDistanceKm: _tryParseDouble(_distanceKmController.text),
         driverLat: currentPlace?.latitude,
         driverLng: currentPlace?.longitude,
-        isAvailable: true,
+        isAvailable: _isAvailable,
       );
       if (!mounted || silent) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -305,15 +322,25 @@ class _DriverPageState extends State<DriverPage> {
         return;
       }
 
+      final completedRideCount = results[2].length;
+      final profileRideCount =
+          _tryParseInt(_driverTotalRidesController.text) ?? 0;
+      final shouldSyncRideCount = completedRideCount > profileRideCount;
       setState(() {
         _pendingRequests = results[0]
             .where((item) => !_declinedRequestIds.contains(item.id))
             .toList(growable: false);
         _myActiveRequests = results[1];
         _myHistoryRequests = results[2];
+        if (shouldSyncRideCount) {
+          _driverTotalRidesController.text = '$completedRideCount';
+        }
         _isLoading = false;
       });
-      _syncFocusedRequestMap();
+      if (shouldSyncRideCount) {
+        _saveDriverProfile(silent: true);
+      }
+      await _syncFocusedRequestMap();
       _loadDriverRatings();
     } catch (_) {
       if (!mounted) {
@@ -330,16 +357,6 @@ class _DriverPageState extends State<DriverPage> {
         _isLoading = false;
       });
     }
-  }
-
-  TowRequest? _preferredMapRequest() {
-    if (_myActiveRequests.isNotEmpty) {
-      return _myActiveRequests.first;
-    }
-    if (_pendingRequests.isNotEmpty) {
-      return _pendingRequests.first;
-    }
-    return null;
   }
 
   String _requestMapSignature(TowRequest request) {
@@ -366,8 +383,7 @@ class _DriverPageState extends State<DriverPage> {
       }
     }
 
-    final nextRequest =
-        forcedRequest ?? currentVisibleFocus ?? _preferredMapRequest();
+    final nextRequest = forcedRequest ?? currentVisibleFocus;
     if (nextRequest == null) {
       if (!mounted) {
         return;
@@ -634,7 +650,9 @@ class _DriverPageState extends State<DriverPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Too far from $label (${meters.round()} m). Move closer to continue.',
+                label == 'pickup'
+                    ? 'Tracking is active. Start Trip unlocks within 150 m of pickup (${meters.round()} m away).'
+                    : 'Too far from $label (${meters.round()} m). Move closer to continue.',
               ),
             ),
           );
@@ -665,7 +683,9 @@ class _DriverPageState extends State<DriverPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Too far from $label (${meters.round()} m). Move closer to continue.',
+              label == 'pickup'
+                  ? 'Tracking is active. Start Trip unlocks within 150 m of pickup (${meters.round()} m away).'
+                  : 'Too far from $label (${meters.round()} m). Move closer to continue.',
             ),
           ),
         );
@@ -723,13 +743,11 @@ class _DriverPageState extends State<DriverPage> {
     });
 
     try {
-      await _pocketBaseService.updateTowRequestAsDriver(
+      final updatedRequest = await _pocketBaseService.updateTowRequestAsDriver(
         requestId: request.id,
         status: status,
         driverName: driverName,
-        licensePlate: request.licensePlate?.trim().isNotEmpty == true
-            ? request.licensePlate
-            : _licensePlateController.text.trim(),
+        licensePlate: _licensePlateController.text.trim(),
         driverPhone: _resolveOwnPhone(),
         driverRating: driverRating,
         driverTotalRides: driverTotalRides,
@@ -749,6 +767,9 @@ class _DriverPageState extends State<DriverPage> {
       }
 
       await _loadRequests(silent: true);
+      if (status == 'assigned' || status == 'en_route') {
+        await _syncFocusedRequestMap(forcedRequest: updatedRequest);
+      }
     } on ClientException catch (e) {
       if (!mounted) {
         return;
@@ -758,12 +779,13 @@ class _DriverPageState extends State<DriverPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
-    } catch (_) {
+    } catch (e) {
       if (!mounted) {
         return;
       }
+      final message = e.toString().replaceFirst('Exception: ', '');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not update request.')),
+        SnackBar(content: Text(message)),
       );
     } finally {
       if (mounted) {
@@ -849,37 +871,16 @@ class _DriverPageState extends State<DriverPage> {
     );
   }
 
-  void _openTracking(TowRequest request) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => TrackServicePage(
-          requestId: request.id,
-          pickupLocation: request.pickupLocation,
-          destinationLocation: request.destination,
-          vehicleDescription: request.vehicleType,
-          licensePlate:
-              request.licensePlate ?? _licensePlateController.text.trim(),
-          driverName: request.driverName ?? _driverNameController.text.trim(),
-          driverRating: request.driverRating ??
-              _tryParseDouble(_driverRatingController.text) ??
-              0,
-          driverTotalRides: request.driverTotalRides ??
-              _tryParseInt(_driverTotalRidesController.text) ??
-              0,
-          distanceKm: request.distanceKm ?? 0,
-          remainingDistanceKm: request.distanceKm ?? 0,
-          etaMinutes: request.etaMinutes ?? 0,
-          baseFare: request.baseFare ?? 0,
-          distanceFare: request.distanceFare ?? 0,
-          pickupLat: request.pickupLat,
-          pickupLng: request.pickupLng,
-          destinationLat: request.destinationLat,
-          destinationLng: request.destinationLng,
-          driverLat: request.driverLat,
-          driverLng: request.driverLng,
-          language: widget.language,
-        ),
-      ),
+  Future<void> _openTracking(TowRequest request) async {
+    await _syncFocusedRequestMap(forcedRequest: request);
+    if (!mounted) {
+      return;
+    }
+
+    final strings = AppStrings(widget.language);
+    _openFullscreenMap(
+      _focusedRequest ?? request,
+      '${_statusLabel(request.status, strings)} | ${request.pickupLocation}',
     );
   }
 
@@ -996,7 +997,7 @@ class _DriverPageState extends State<DriverPage> {
             else if (_myHistoryRequests.isEmpty)
               _buildEmptyCard(
                 context,
-                message: 'No completed or cancelled jobs yet.',
+                message: 'No completed jobs yet.',
               )
             else
               ..._myHistoryRequests.map(
@@ -1401,7 +1402,7 @@ class _DriverPageState extends State<DriverPage> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Snap car plate. OCR fills license_plate automatically.',
+            'Save your tow truck plate. Customers see it after you accept a job.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: _mutedColor(context),
                 ),
@@ -1476,8 +1477,9 @@ class _DriverPageState extends State<DriverPage> {
                           ),
                         )
                       : const Icon(Icons.camera_alt_outlined),
-                  label:
-                      Text(_isScanningPlate ? 'Scanning...' : 'Scan Car Plate'),
+                  label: Text(
+                    _isScanningPlate ? 'Scanning...' : 'Scan Truck Plate',
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -1833,7 +1835,9 @@ class _DriverPageState extends State<DriverPage> {
           ),
           const SizedBox(height: 4),
           Text(
-            'You (truck), customer pickup, and destination on one map. Tap a request to focus.',
+            focused == null
+                ? 'Your truck location is shown here. Tap Track on a job to focus its route.'
+                : 'Showing this job route for the driver.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: _mutedColor(context),
                 ),
@@ -2227,7 +2231,7 @@ class _DriverPageState extends State<DriverPage> {
       return FilledButton.icon(
         onPressed: _isSaving ? null : () => _acceptRequest(request),
         icon: const Icon(Icons.check_circle_outline, size: 18),
-        label: const Text('Accept', overflow: TextOverflow.ellipsis),
+        label: const Text('Accept & track', overflow: TextOverflow.ellipsis),
       );
     }
 
@@ -2243,7 +2247,7 @@ class _DriverPageState extends State<DriverPage> {
       return FilledButton.icon(
         onPressed: _isSaving ? null : () => _startTrip(request),
         icon: const Icon(Icons.directions_car_filled_outlined, size: 18),
-        label: const Text('Start Trip', overflow: TextOverflow.ellipsis),
+        label: const Text('Start at pickup', overflow: TextOverflow.ellipsis),
       );
     }
 
@@ -2301,7 +2305,7 @@ class _DriverPageState extends State<DriverPage> {
                   onPressed: _isSaving ? null : () => _acceptRequest(request),
                   icon: const Icon(Icons.check_circle_outline, size: 18),
                   label: const Text(
-                    'Accept',
+                    'Accept & track',
                     overflow: TextOverflow.ellipsis,
                     maxLines: 1,
                   ),

@@ -1125,6 +1125,19 @@
         "type": "relation"
       },
       {
+        "cascadeDelete": false,
+        "collectionId": "_pb_users_auth_",
+        "hidden": false,
+        "id": "rel_tow_candidate_drivers",
+        "maxSelect": 3,
+        "minSelect": 0,
+        "name": "candidate_drivers",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "relation"
+      },
+      {
         "autogeneratePattern": "",
         "hidden": false,
         "id": "text4137055384",

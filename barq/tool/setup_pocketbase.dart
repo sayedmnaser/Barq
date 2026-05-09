@@ -69,6 +69,28 @@ Future<void> main(List<String> args) async {
         },
       },
       {
+        'name': 'driver',
+        'type': 'relation',
+        'required': false,
+        'options': {
+          'collectionId': '_pb_users_auth_',
+          'cascadeDelete': false,
+          'maxSelect': 1,
+          'minSelect': null,
+        },
+      },
+      {
+        'name': 'candidate_drivers',
+        'type': 'relation',
+        'required': false,
+        'options': {
+          'collectionId': '_pb_users_auth_',
+          'cascadeDelete': false,
+          'maxSelect': 3,
+          'minSelect': null,
+        },
+      },
+      {
         'name': 'pickup_location',
         'type': 'text',
         'required': true,
@@ -189,11 +211,14 @@ Future<void> main(List<String> args) async {
         'options': {'min': null, 'max': null, 'noDecimal': false},
       },
     ],
-    // API rules: authenticated users can manage their own records
-    'listRule': '@request.auth.id = user',
-    'viewRule': '@request.auth.id = user',
+    // API rules: customers see their jobs; drivers see/claim driver jobs.
+    'listRule':
+        '@request.auth.id != "" && (user = @request.auth.id || driver = @request.auth.id || @request.auth.Driver = true)',
+    'viewRule':
+        '@request.auth.id != "" && (user = @request.auth.id || driver = @request.auth.id || @request.auth.Driver = true)',
     'createRule': '@request.auth.id != ""',
-    'updateRule': '@request.auth.id = user',
+    'updateRule':
+        '@request.auth.id != "" && (user = @request.auth.id || driver = @request.auth.id || @request.auth.Driver = true)',
     'deleteRule': '@request.auth.id = user',
   };
 
@@ -211,6 +236,8 @@ Future<void> main(List<String> args) async {
     print('');
     print('Fields:');
     print('  user            -> Relation (users)');
+    print('  driver          -> Relation (users)');
+    print('  candidate_drivers -> Relation (users, closest 3)');
     print('  pickup_location -> Text (required)');
     print('  destination     -> Text (required)');
     print('  vehicle_type    -> Text (required)');
@@ -230,7 +257,8 @@ Future<void> main(List<String> args) async {
     print('  distance_fare   -> Number');
     print('');
     print('API Rules:');
-    print('  List/View/Update/Delete: owner only (@request.auth.id = user)');
+    print('  List/View/Update: owner or driver');
+    print('  Delete: owner only (@request.auth.id = user)');
     print('  Create: any authenticated user');
   } else {
     stderr.writeln('Failed to create collection: ${createRes.body}');

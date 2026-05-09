@@ -18,6 +18,7 @@ class BarqLiveMap extends StatefulWidget {
     this.headline,
     this.subline,
     this.followDriver = true,
+    this.onMapTap,
   });
 
   final double height;
@@ -29,6 +30,7 @@ class BarqLiveMap extends StatefulWidget {
   final String? headline;
   final String? subline;
   final bool followDriver;
+  final ValueChanged<LatLng>? onMapTap;
 
   @override
   State<BarqLiveMap> createState() => _BarqLiveMapState();
@@ -78,7 +80,16 @@ class _BarqLiveMapState extends State<BarqLiveMap>
     final pickupChanged = widget.pickup?.latLng != oldWidget.pickup?.latLng;
     final destChanged =
         widget.destination?.latLng != oldWidget.destination?.latLng;
-    if ((pickupChanged || destChanged) && !_initialFitDone) {
+    final routeChanged =
+        widget.routePoints.length != oldWidget.routePoints.length ||
+            (widget.routePoints.isNotEmpty &&
+                oldWidget.routePoints.isNotEmpty &&
+                (widget.routePoints.first != oldWidget.routePoints.first ||
+                    widget.routePoints.last != oldWidget.routePoints.last));
+    if (pickupChanged || destChanged || routeChanged) {
+      _initialFitDone = false;
+    }
+    if ((pickupChanged || destChanged || routeChanged) && !_initialFitDone) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _fitInitial());
     }
   }
@@ -152,8 +163,8 @@ class _BarqLiveMapState extends State<BarqLiveMap>
     ];
     final unique = <LatLng>[];
     for (final p in list) {
-      if (!unique.any((u) =>
-          u.latitude == p.latitude && u.longitude == p.longitude)) {
+      if (!unique
+          .any((u) => u.latitude == p.latitude && u.longitude == p.longitude)) {
         unique.add(p);
       }
     }
@@ -256,6 +267,9 @@ class _BarqLiveMapState extends State<BarqLiveMap>
               initialCameraFit: initialFit,
               minZoom: 9,
               maxZoom: 18,
+              onTap: (_, point) {
+                widget.onMapTap?.call(point);
+              },
               onPointerDown: (_, __) {
                 if (_followDriver) setState(() => _followDriver = false);
               },

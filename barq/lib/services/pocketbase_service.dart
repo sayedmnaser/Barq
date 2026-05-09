@@ -17,6 +17,7 @@ class PocketBaseService {
   static const String _loginTimestampKey = 'pb_login_timestamp';
   static const String _driverProfilesCollection = 'driver_profiles';
   static const double _autoCompleteRadiusMeters = 150.0;
+  static const Duration pendingRequestTtl = Duration(minutes: 15);
 
   static PocketBaseService? _instance;
 
@@ -524,6 +525,7 @@ class PocketBaseService {
     double? driverLng,
     String? driverName,
     String? driverUserId,
+    List<String> candidateDriverIds = const <String>[],
     double? driverRating,
     int? driverTotalRides,
     String? licensePlate,
@@ -559,6 +561,8 @@ class PocketBaseService {
         'driver_name': driverName.trim(),
       if (driverUserId != null && driverUserId.trim().isNotEmpty)
         'driver': driverUserId.trim(),
+      if (candidateDriverIds.isNotEmpty)
+        'candidate_drivers': candidateDriverIds,
       if (driverRating != null) 'driver_rating': driverRating,
       if (driverTotalRides != null) 'driver_total_rides': driverTotalRides,
       if (licensePlate != null && licensePlate.trim().isNotEmpty)
@@ -586,6 +590,7 @@ class PocketBaseService {
           'driver_lng',
           'driver_name',
           'driver',
+          'candidate_drivers',
           'driver_rating',
           'driver_total_rides',
           'license_plate',
@@ -628,6 +633,8 @@ class PocketBaseService {
       return const <TowRequest>[];
     }
 
+    await cleanupExpiredPendingRequests();
+
     final result = await _client.collection('tow_requests').getList(
           page: 1,
           perPage: 200,
@@ -648,8 +655,7 @@ class PocketBaseService {
     final result = await _client.collection('tow_requests').getList(
           page: 1,
           perPage: 200,
-          filter:
-              'user = "$userId" && (status = "completed" || status = "cancelled")',
+          filter: 'user = "$userId" && status = "completed"',
           sort: '-created',
         );
 
@@ -661,6 +667,8 @@ class PocketBaseService {
       throw Exception('Driver role is required.');
     }
 
+    await cleanupExpiredPendingRequests(includeDriverVisible: true);
+
     final selfId = _userId ?? '';
     final selfFilter =
         selfId.isEmpty ? '' : ' && user != "${_escapeFilterValue(selfId)}"';
@@ -671,7 +679,18 @@ class PocketBaseService {
           sort: 'created',
         );
 
-    return result.items.map(TowRequest.fromRecord).toList(growable: false);
+    final requests =
+        result.items.map(TowRequest.fromRecord).toList(growable: false);
+    if (selfId.isEmpty) {
+      return requests;
+    }
+
+    return requests.where((request) {
+      if (request.candidateDriverIds.isEmpty) {
+        return true;
+      }
+      return request.candidateDriverIds.contains(selfId);
+    }).toList(growable: false);
   }
 
   Future<List<TowRequest>> getDriverActiveRequests(String driverName) async {
@@ -679,17 +698,20 @@ class PocketBaseService {
       throw Exception('Driver role is required.');
     }
 
+    final userId = _userId?.trim() ?? '';
     final normalizedDriver = driverName.trim();
-    if (normalizedDriver.isEmpty) {
+    if (userId.isEmpty && normalizedDriver.isEmpty) {
       return const <TowRequest>[];
     }
 
-    final escapedDriver = _escapeFilterValue(normalizedDriver);
+    final driverFilter = userId.isNotEmpty
+        ? 'driver = "${_escapeFilterValue(userId)}"'
+        : 'driver_name = "${_escapeFilterValue(normalizedDriver)}"';
     final result = await _client.collection('tow_requests').getList(
           page: 1,
           perPage: 200,
           filter:
-              'driver_name = "$escapedDriver" && (status = "assigned" || status = "en_route")',
+              '$driverFilter && (status = "assigned" || status = "en_route")',
           sort: '-updated',
         );
 
@@ -702,30 +724,77 @@ class PocketBaseService {
     }
 
     final normalizedDriver = driverName.trim();
-    final userId = _userId ?? '';
-    if (normalizedDriver.isEmpty && userId.isEmpty) {
+    final userId = _userId?.trim() ?? '';
+    if (userId.isEmpty && normalizedDriver.isEmpty) {
       return const <TowRequest>[];
     }
 
-    final filters = <String>[];
-    if (normalizedDriver.isNotEmpty) {
-      filters.add('driver_name = "${_escapeFilterValue(normalizedDriver)}"');
-    }
-    if (userId.isNotEmpty) {
-      filters.add('driver = "$userId"');
-    }
-    final driverFilter =
-        filters.length == 1 ? filters.first : '(${filters.join(' || ')})';
+    final driverFilter = userId.isNotEmpty
+        ? 'driver = "${_escapeFilterValue(userId)}"'
+        : 'driver_name = "${_escapeFilterValue(normalizedDriver)}"';
 
     final result = await _client.collection('tow_requests').getList(
           page: 1,
           perPage: 200,
-          filter:
-              '$driverFilter && (status = "completed" || status = "cancelled")',
+          filter: '$driverFilter && status = "completed"',
           sort: '-updated',
         );
 
     return result.items.map(TowRequest.fromRecord).toList(growable: false);
+  }
+
+  Future<void> cleanupExpiredPendingRequests({
+    bool includeDriverVisible = false,
+  }) async {
+    final userId = _userId?.trim();
+    if (userId == null || userId.isEmpty) {
+      return;
+    }
+
+    final cutoff =
+        DateTime.now().toUtc().subtract(pendingRequestTtl).toIso8601String();
+    final filters = <String>[
+      'status = "pending"',
+      'created <= "$cutoff"',
+    ];
+    if (!includeDriverVisible || !isCurrentUserDriver) {
+      filters.add('user = "${_escapeFilterValue(userId)}"');
+    }
+
+    List<RecordModel> expired;
+    try {
+      final result = await _client.collection('tow_requests').getList(
+            page: 1,
+            perPage: 200,
+            filter: filters.join(' && '),
+            sort: 'created',
+          );
+      expired = result.items;
+    } on ClientException {
+      return;
+    }
+
+    for (final record in expired) {
+      final ownerId = record.getStringValue('user').trim();
+      final ownsRequest = ownerId == userId;
+      if (ownsRequest) {
+        try {
+          await _client.collection('tow_requests').delete(record.id);
+          continue;
+        } on ClientException {
+          // Fall through to status update when delete rules are stricter.
+        }
+      }
+
+      try {
+        await _client.collection('tow_requests').update(
+          record.id,
+          body: const <String, dynamic>{'status': 'expired'},
+        );
+      } on ClientException {
+        // Best effort cleanup; hidden filters still keep successful rows out.
+      }
+    }
   }
 
   /// Pushes the driver's live coordinates to every active tow_request currently
@@ -855,15 +924,33 @@ class PocketBaseService {
       );
     }
 
+    final requestedStatus = status?.trim();
     if (attachDriverUser && _userId != null) {
+      RecordModel? existing;
       try {
-        final existing =
-            await _client.collection('tow_requests').getOne(requestId);
+        existing = await _client.collection('tow_requests').getOne(requestId);
+      } on ClientException {
+        existing = null;
+      }
+
+      if (existing != null) {
         if (existing.getStringValue('user') == _userId) {
           throw Exception('You cannot accept your own tow request.');
         }
-      } on ClientException {
-        // If we cannot pre-check, fall through; server rules may still block it.
+        final existingDriver = existing.getStringValue('driver').trim();
+        if (existingDriver.isNotEmpty && existingDriver != _userId) {
+          throw Exception('Another driver already accepted this request.');
+        }
+        final candidates = existing.getListValue<String>('candidate_drivers');
+        if ((requestedStatus == 'assigned' || requestedStatus == 'en_route') &&
+            candidates.isNotEmpty &&
+            !candidates.contains(_userId)) {
+          throw Exception('This request is reserved for the closest drivers.');
+        }
+        final existingStatus = existing.getStringValue('status').trim();
+        if (requestedStatus == 'assigned' && existingStatus != 'pending') {
+          throw Exception('Another driver already accepted this request.');
+        }
       }
     }
 
@@ -1065,9 +1152,25 @@ class PocketBaseService {
 
     await _client.collection('tow_requests').subscribe('*', (event) {
       final record = event.record;
-      if (record != null && record.getStringValue('user') == userId) {
+      if (record == null || record.getStringValue('user') == userId) {
         onChange();
       }
+    });
+  }
+
+  Future<void> subscribeDriverTowRequests(void Function() onChange) async {
+    if (!isCurrentUserDriver) {
+      return;
+    }
+
+    await _client.collection('tow_requests').subscribe('*', (_) {
+      onChange();
+    });
+  }
+
+  Future<void> subscribeDriverProfiles(void Function() onChange) async {
+    await _client.collection(_driverProfilesCollection).subscribe('*', (_) {
+      onChange();
     });
   }
 
@@ -1081,6 +1184,14 @@ class PocketBaseService {
 
   Future<void> unsubscribeCurrentUserRequests() async {
     _client.collection('tow_requests').unsubscribe('*');
+  }
+
+  Future<void> unsubscribeDriverTowRequests() async {
+    _client.collection('tow_requests').unsubscribe('*');
+  }
+
+  Future<void> unsubscribeDriverProfiles() async {
+    _client.collection(_driverProfilesCollection).unsubscribe('*');
   }
 
   Future<bool> canReachServerNow() async {

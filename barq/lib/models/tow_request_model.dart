@@ -18,6 +18,7 @@ class TowRequest {
     this.driverLng,
     this.driverName,
     this.driverUserId,
+    this.candidateDriverIds = const <String>[],
     this.driverPhone,
     this.driverRating,
     this.driverTotalRides,
@@ -50,6 +51,7 @@ class TowRequest {
   final double? driverLng;
   final String? driverName;
   final String? driverUserId;
+  final List<String> candidateDriverIds;
   final String? driverPhone;
   final double? driverRating;
   final int? driverTotalRides;
@@ -88,25 +90,25 @@ class TowRequest {
       driverLng: _nullableDouble(record, 'driver_lng'),
       driverName: _nullableString(record.getStringValue('driver_name')),
       driverUserId: _nullableString(record.getStringValue('driver')),
+      candidateDriverIds:
+          List<String>.from(record.getListValue<String>('candidate_drivers')),
       driverPhone: _nullableString(record.getStringValue('driver_phone')),
       driverRating: _nullableDouble(record, 'driver_rating'),
-      driverTotalRides: _nullableInt(record, 'driver_total_rides'),
+      driverTotalRides: record.getIntValue('driver_total_rides'),
       licensePlate: _nullableString(record.getStringValue('license_plate')),
       distanceKm: _nullableDouble(record, 'distance_km'),
       etaMinutes: _nullableInt(record, 'eta_minutes'),
       baseFare: _nullableDouble(record, 'base_fare'),
       distanceFare: _nullableDouble(record, 'distance_fare'),
       rated: record.getBoolValue('rated'),
-      pickupPhoto:
-          _nullableString(record.getStringValue('pickup_photo')),
-      dropoffPhoto:
-          _nullableString(record.getStringValue('dropoff_photo')),
+      pickupPhoto: _nullableString(record.getStringValue('pickup_photo')),
+      dropoffPhoto: _nullableString(record.getStringValue('dropoff_photo')),
       damagePhotos:
           List<String>.from(record.getListValue<String>('damage_photos')),
-      created: DateTime.tryParse(record.getStringValue('created')) ??
-          DateTime.now(),
-      updated: DateTime.tryParse(record.getStringValue('updated')) ??
-          DateTime.now(),
+      created:
+          DateTime.tryParse(record.getStringValue('created')) ?? DateTime.now(),
+      updated:
+          DateTime.tryParse(record.getStringValue('updated')) ?? DateTime.now(),
     );
   }
 
