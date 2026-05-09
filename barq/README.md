@@ -1,76 +1,138 @@
-# Barq source bundle
+# Barq
 
-This package is a cleaned-up Flutter source bundle for Barq with:
+Barq is a Flutter towing app for Bahrain. It connects customers who need roadside help with nearby drivers, estimates trip cost from map distance, and keeps both sides updated through PocketBase realtime data.
 
-- PocketBase through a central service in `lib/services/pocketbase_service.dart`
-- Bahrain map search and routing through `lib/services/bahrain_map_service.dart`
-- live map widgets in estimate, request, and tracking screens
-- a deployment template under `deployment/pocketbase/` so your phone app can work from any Wi-Fi once you host PocketBase on a public domain
+<p align="center">
+  <img src="assets/readme/barq-route-animation.svg" alt="Animated Barq route preview" width="860">
+</p>
 
-## Open this as your project root
+## Highlights
 
-The important files are already in the correct places:
+- Customer flow for sign up, sign in, tow requests, fare estimates, service tracking, ratings, and driver reports.
+- Driver flow for availability, incoming jobs, accepted trips, location updates, completion history, and cancellation review.
+- Bahrain-focused map search, reverse geocoding, route drawing, ETA, distance, and fare calculations.
+- PocketBase backend integration for auth, tow requests, driver profiles, ratings, reports, applications, and support content.
+- Optional AI-assisted support, driver application review, and report moderation through configured provider keys.
+- Deployment template for running PocketBase behind a public HTTPS domain.
+
+## Tech Stack
+
+- Flutter and Dart
+- PocketBase
+- `flutter_map`, OpenStreetMap tiles, Nominatim, and OSRM by default
+- `geolocator` for device location
+- `image_picker` and ML Kit text recognition for driver application uploads
+
+## Project Layout
 
 ```text
 barq/
-  pubspec.yaml
-  analysis_options.yaml
-  assets/images/white_mod.png
-  lib/
-  test/
-  deployment/pocketbase/
+  lib/                         Flutter app source
+  lib/services/                Backend, map, location, support, and AI services
+  assets/images/               App image assets
+  deployment/pocketbase/       PocketBase Docker, Caddy, schema, hooks, migrations
+  test/                        Flutter widget tests
+  pubspec.yaml                 Dart package and asset configuration
 ```
 
-## App configuration
+## Quick Start
 
-For production on a real phone, point the app to a public HTTPS backend:
+Install dependencies:
 
 ```bash
-flutter run --dart-define=POCKETBASE_URL=https://api.barq-api.uk
+flutter pub get
 ```
 
-For local testing on a real phone on the same Wi-Fi:
+Run against the default production backend:
+
+```bash
+flutter run
+```
+
+Run against a local PocketBase server on the same Wi-Fi:
 
 ```bash
 flutter run --dart-define=POCKETBASE_URL=http://YOUR_PC_IP:8090
 ```
 
-## PocketBase collections expected
+Run with an explicit production backend:
 
-### `users`
-Auth collection used for sign in and sign up.
+```bash
+flutter run --dart-define=POCKETBASE_URL=https://api.barq-api.uk
+```
 
-### `tow_requests`
-Required fields already used by the app:
+## Configuration
 
-- `user`
-- `pickup_location`
-- `destination`
-- `vehicle_type`
-- `details`
-- `service_timing`
-- `status`
+The app reads runtime configuration from Dart defines in `lib/services/app_config.dart`.
 
-Optional fields the app can read when available:
+| Define | Default | Purpose |
+| --- | --- | --- |
+| `POCKETBASE_URL` | `https://api.barq-api.uk` | PocketBase API base URL |
+| `GEOCODING_BASE_URL` | `https://nominatim.openstreetmap.org` | Place search and reverse geocoding |
+| `ROUTING_BASE_URL` | `https://router.project-osrm.org` | Route and distance calculation |
+| `MAP_TILE_URL` | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | Map tile template |
+| `MAP_USER_AGENT` | `com.barq.app` | User agent for map requests |
+| `GOOGLE_MAPS_KEY` | empty | Optional Google Directions fallback |
+| `OPENROUTER_API_KEY` | empty | Optional support AI provider |
+| `GEMINI_API_KEY` | empty | Optional moderation and review provider |
+| `GROQ_API_KEY` | empty | Optional support AI provider |
 
-- `pickup_lat`
-- `pickup_lng`
-- `destination_lat`
-- `destination_lng`
-- `driver_lat`
-- `driver_lng`
-- `driver`
-- `distance_km`
-- `eta_minutes`
-- `base_fare`
-- `distance_fare`
-- `driver_name`
-- `driver_rating`
-- `driver_total_rides`
-- `license_plate`
+Example with custom map services:
+
+```bash
+flutter run \
+  --dart-define=POCKETBASE_URL=https://api.example.com \
+  --dart-define=GEOCODING_BASE_URL=https://geocoder.example.com \
+  --dart-define=ROUTING_BASE_URL=https://router.example.com \
+  --dart-define=MAP_TILE_URL=https://tiles.example.com/{z}/{x}/{y}.png
+```
+
+## PocketBase Backend
+
+The backend template is in `deployment/pocketbase/`.
+
+For Docker and Caddy:
+
+```bash
+cd deployment/pocketbase
+cp .env.example .env
+docker compose up -d --build
+```
+
+For a VPS binary deployment, use the included `pocketbase.service`, `pb_schema.json`, `pb_hooks/`, and `pb_migrations/` files. See [deployment/pocketbase/README.md](deployment/pocketbase/README.md) for the backend-specific steps.
+
+Important collections used by the app:
+
+- `users`
+- `tow_requests`
+- `driver_profiles`
+- `ratings`
+- `driver_reports`
+- `driver_applications`
+- `support_qa`
+
+## Development Checks
+
+Run the analyzer:
+
+```bash
+flutter analyze
+```
+
+Run tests:
+
+```bash
+flutter test
+```
+
+Build an Android release with the helper script:
+
+```powershell
+.\build_release.ps1
+```
 
 ## Notes
 
-- The app source is ready to download and replace your project files.
-- A public server/domain is still required if you want the app to work from any Wi-Fi in Bahrain.
-- The deployment templates are in `deployment/pocketbase/`.
+- A public HTTPS PocketBase URL is required for reliable phone testing across networks.
+- OpenStreetMap, Nominatim, and public OSRM defaults are useful for development; production deployments should consider dedicated map services and usage policies.
+- `README_FIX.md` documents the common mistake of copying `pubspec.yaml` into `lib/`; the correct project root is the folder containing this README and `pubspec.yaml`.

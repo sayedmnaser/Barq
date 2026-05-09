@@ -1,0 +1,220 @@
+<svg width="960" height="320" viewBox="0 0 960 320" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Animated Barq route preview</title>
+  <desc id="desc">A stylized tow request route moves from customer pickup to driver tracking across Bahrain.</desc>
+  <style>
+    .label {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      fill: #eaf6ff;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .small {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      fill: #9fb4c8;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .metric {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      fill: #101820;
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .grid {
+      stroke: #243244;
+      stroke-width: 1;
+      opacity: 0.45;
+    }
+
+    .route-base {
+      stroke: #233548;
+      stroke-width: 12;
+      stroke-linecap: round;
+    }
+
+    .route-glow {
+      stroke: #31f2c3;
+      stroke-width: 18;
+      stroke-linecap: round;
+      opacity: 0.16;
+      filter: url(#softGlow);
+    }
+
+    .route {
+      stroke: #20c7ff;
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-dasharray: 18 18;
+      animation: routeDash 2.2s linear infinite;
+    }
+
+    .pulse {
+      animation: pulse 2.1s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    .card {
+      animation: cardLift 4.8s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    .card.delay-1 {
+      animation-delay: 0.5s;
+    }
+
+    .card.delay-2 {
+      animation-delay: 1s;
+    }
+
+    .bolt {
+      animation: flicker 1.5s ease-in-out infinite;
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    @keyframes routeDash {
+      to {
+        stroke-dashoffset: -72;
+      }
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 0.35;
+        transform: scale(0.72);
+      }
+      50% {
+        opacity: 0;
+        transform: scale(1.65);
+      }
+    }
+
+    @keyframes cardLift {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-6px);
+      }
+    }
+
+    @keyframes flicker {
+      0%, 100% {
+        opacity: 0.55;
+        transform: scale(0.96);
+      }
+      45%, 60% {
+        opacity: 1;
+        transform: scale(1.04);
+      }
+    }
+  </style>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="960" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#08111f"/>
+      <stop offset="0.55" stop-color="#102335"/>
+      <stop offset="1" stop-color="#07131a"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="80" y1="72" x2="880" y2="272" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#122538"/>
+      <stop offset="1" stop-color="#0d1a27"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+    <path id="routePath" d="M185 215 C285 98 390 102 485 171 S665 270 775 118"/>
+  </defs>
+
+  <rect width="960" height="320" rx="28" fill="url(#bg)"/>
+
+  <g opacity="0.55">
+    <path class="grid" d="M0 70H960"/>
+    <path class="grid" d="M0 140H960"/>
+    <path class="grid" d="M0 210H960"/>
+    <path class="grid" d="M0 280H960"/>
+    <path class="grid" d="M120 0V320"/>
+    <path class="grid" d="M240 0V320"/>
+    <path class="grid" d="M360 0V320"/>
+    <path class="grid" d="M480 0V320"/>
+    <path class="grid" d="M600 0V320"/>
+    <path class="grid" d="M720 0V320"/>
+    <path class="grid" d="M840 0V320"/>
+  </g>
+
+  <rect x="64" y="50" width="832" height="220" rx="26" fill="url(#panel)" stroke="#244058" filter="url(#shadow)"/>
+
+  <g transform="translate(102 86)">
+    <text class="label" font-size="38">Barq</text>
+    <text class="small" y="31">Tow requests, driver matching, and live tracking</text>
+  </g>
+
+  <g class="card" transform="translate(104 196)">
+    <rect width="146" height="54" rx="16" fill="#e8f7ff"/>
+    <circle cx="28" cy="27" r="13" fill="#20c7ff"/>
+    <text class="metric" x="52" y="25">Request</text>
+    <text class="small" x="52" y="43" fill="#365165">Pickup set</text>
+  </g>
+
+  <g class="card delay-1" transform="translate(407 234)">
+    <rect width="150" height="54" rx="16" fill="#f0ffe8"/>
+    <circle cx="28" cy="27" r="13" fill="#31f2c3"/>
+    <text class="metric" x="52" y="25">Match</text>
+    <text class="small" x="52" y="43" fill="#365165">Nearby driver</text>
+  </g>
+
+  <g class="card delay-2" transform="translate(704 194)">
+    <rect width="154" height="54" rx="16" fill="#fff5df"/>
+    <circle cx="28" cy="27" r="13" fill="#ffb84d"/>
+    <text class="metric" x="52" y="25">Track</text>
+    <text class="small" x="52" y="43" fill="#365165">Live ETA</text>
+  </g>
+
+  <use href="#routePath" class="route-glow"/>
+  <use href="#routePath" class="route-base"/>
+  <use href="#routePath" class="route"/>
+
+  <g transform="translate(185 215)">
+    <circle r="34" fill="#20c7ff" opacity="0.12" class="pulse"/>
+    <circle r="12" fill="#20c7ff"/>
+    <circle r="5" fill="#eaf6ff"/>
+  </g>
+
+  <g transform="translate(775 118)">
+    <circle r="36" fill="#ffb84d" opacity="0.14" class="pulse"/>
+    <circle r="13" fill="#ffb84d"/>
+    <path d="M770 115h12l-7 15 3-11h-10l7-15-5 11z" fill="#101820" class="bolt"/>
+  </g>
+
+  <g>
+    <animateMotion dur="5s" repeatCount="indefinite" rotate="auto">
+      <mpath href="#routePath"/>
+    </animateMotion>
+    <g transform="translate(-28 -18)">
+      <rect x="4" y="8" width="43" height="22" rx="7" fill="#f8fbff"/>
+      <path d="M13 8h19l8-8h15c5 0 9 4 9 9v21H47V17H13V8z" fill="#31f2c3"/>
+      <path d="M48 12h14l10 9v9H48V12z" fill="#20c7ff"/>
+      <circle cx="17" cy="34" r="7" fill="#0b111a"/>
+      <circle cx="17" cy="34" r="3" fill="#eaf6ff"/>
+      <circle cx="55" cy="34" r="7" fill="#0b111a"/>
+      <circle cx="55" cy="34" r="3" fill="#eaf6ff"/>
+      <rect x="23" y="14" width="14" height="5" rx="2.5" fill="#0b111a" opacity="0.35"/>
+    </g>
+  </g>
+
+  <g transform="translate(618 82)">
+    <rect width="228" height="64" rx="18" fill="#0b1723" stroke="#263c52"/>
+    <text class="small" x="20" y="27">Estimated fare</text>
+    <text class="label" x="20" y="52" font-size="24">2.450 BHD</text>
+    <text class="small" x="140" y="52">12 min</text>
+  </g>
+</svg>
