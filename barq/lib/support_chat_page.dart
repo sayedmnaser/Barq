@@ -145,8 +145,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
                 final message = _messages[index];
                 final isUser = message.role == _ChatRole.user;
                 return Align(
-                  alignment:
-                      isUser ? Alignment.centerRight : Alignment.centerLeft,
+                  alignment: isUser
+                      ? AlignmentDirectional.centerEnd
+                      : AlignmentDirectional.centerStart,
                   child: Column(
                     crossAxisAlignment: isUser
                         ? CrossAxisAlignment.end
@@ -180,7 +181,8 @@ class _SupportChatPageState extends State<SupportChatPage> {
                           message.qaId != null &&
                           message.qaId!.isNotEmpty)
                         Padding(
-                          padding: const EdgeInsets.only(left: 4, bottom: 10),
+                          padding: const EdgeInsetsDirectional.only(
+                              start: 4, bottom: 10),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [

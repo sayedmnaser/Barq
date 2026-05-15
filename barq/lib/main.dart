@@ -929,7 +929,10 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right),
+              Transform.flip(
+                flipX: Directionality.of(context) == TextDirection.rtl,
+                child: const Icon(Icons.chevron_right),
+              ),
             ],
           ),
         ),

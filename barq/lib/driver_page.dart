@@ -2099,7 +2099,7 @@ class _DriverPageState extends State<DriverPage> {
                   request.status == 'en_route') ...[
                 const SizedBox(height: 6),
                 Align(
-                  alignment: Alignment.centerRight,
+                  alignment: AlignmentDirectional.centerEnd,
                   child: TextButton.icon(
                     onPressed: _isSaving ? null : () => _promptCancel(request),
                     icon: const Icon(Icons.cancel_outlined,

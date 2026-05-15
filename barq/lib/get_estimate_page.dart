@@ -341,7 +341,7 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
                     ),
                   if (_routeError != null)
                     Align(
-                      alignment: Alignment.centerLeft,
+                      alignment: AlignmentDirectional.centerStart,
                       child: Text(
                         _routeError!,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -396,7 +396,7 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
                   ),
                   const SizedBox(height: 12),
                   Align(
-                    alignment: Alignment.centerLeft,
+                    alignment: AlignmentDirectional.centerStart,
                     child: Text(
                       strings.text('estimateDisclaimer'),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(

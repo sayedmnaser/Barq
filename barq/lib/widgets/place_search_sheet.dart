@@ -194,7 +194,11 @@ class _BahrainPlaceSearchSheetState extends State<BahrainPlaceSearchSheet> {
                           IconButton(
                             onPressed: () =>
                                 _performSearch(_queryController.text.trim()),
-                            icon: const Icon(Icons.arrow_forward),
+                            icon: Transform.flip(
+                              flipX: Directionality.of(context) ==
+                                  TextDirection.rtl,
+                              child: const Icon(Icons.arrow_forward),
+                            ),
                             tooltip: _searchActionLabel,
                           ),
                         ],

@@ -773,10 +773,7 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(strings.text('profileSettings')),
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
+          leading: const BackButton(),
         ),
         body: Column(
           children: [
@@ -1011,7 +1008,7 @@ class _SettingsPageState extends State<SettingsPage> {
           leadingIcon: Icons.verified_user_outlined,
           children: [
             Align(
-              alignment: Alignment.centerLeft,
+              alignment: AlignmentDirectional.centerStart,
               child: Chip(
                 label: Text(user.role),
               ),
@@ -1121,7 +1118,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 8),
             Align(
-              alignment: Alignment.centerLeft,
+              alignment: AlignmentDirectional.centerStart,
               child: OutlinedButton.icon(
                 onPressed: _shareLocation ? _requestLocationAccess : null,
                 icon: const Icon(Icons.gps_fixed),
