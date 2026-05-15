@@ -458,12 +458,12 @@ class _RequestTowPageState extends State<RequestTowPage> {
 
     try {
       final profiles = await _pocketBaseService.getDriverProfiles(limit: 200);
-      var candidates =
+      final candidates =
           _buildNearbyDriversFromProfiles(profiles, userPlace: userPlace);
-      candidates = candidates
-          .where((driver) => driver.distanceKm <= 12.0)
-          .toList(growable: false);
 
+      // Always show the closest 3 available drivers, regardless of distance.
+      // Even if every driver is far, the customer still sees something to
+      // request rather than an empty list.
       candidates.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
       final topThree = candidates.take(3).toList(growable: false);
 
