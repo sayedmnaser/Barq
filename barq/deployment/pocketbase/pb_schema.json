@@ -1076,10 +1076,10 @@
   },
   {
     "id": "pbc_1878279010",
-    "listRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id) && !(declined_by.id ?= @request.auth.id)))",
-    "viewRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id) && !(declined_by.id ?= @request.auth.id)))",
+    "listRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id)))",
+    "viewRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id)))",
     "createRule": "@request.auth.id = user",
-    "updateRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && driver = \"\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id) && !(declined_by.id ?= @request.auth.id)))",
+    "updateRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && driver = \"\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id)))",
     "deleteRule": "@request.auth.id = user",
     "name": "tow_requests",
     "type": "base",
