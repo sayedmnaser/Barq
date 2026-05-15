@@ -242,6 +242,22 @@ class _RequestTowPageState extends State<RequestTowPage> {
       return;
     }
 
+    // Smart routing: which slot does this tap fill?
+    //   1. If pickup empty, fill pickup (regardless of toggle).
+    //   2. If pickup set but destination empty, fill destination.
+    //   3. If both set, respect the user's segmented-button choice.
+    // Without this, users with an auto-populated pickup who tap the map for
+    // destination still got their pickup overwritten when the toggle was on
+    // "pickup" — confusing and the audit-reported bug.
+    final bool setsPickup;
+    if (_pickupPlace == null) {
+      setsPickup = true;
+    } else if (_destinationPlace == null) {
+      setsPickup = false;
+    } else {
+      setsPickup = _mapTapSetsPickup;
+    }
+
     setState(() {
       _isResolvingMapTap = true;
     });
@@ -252,7 +268,7 @@ class _RequestTowPageState extends State<RequestTowPage> {
         longitude: point.longitude,
       );
       final fallbackTitle =
-          _mapTapSetsPickup ? 'Pinned pickup' : 'Pinned destination';
+          setsPickup ? 'Pinned pickup' : 'Pinned destination';
       final place = (reversed ??
               PlaceResult(
                 title: fallbackTitle,
@@ -274,16 +290,19 @@ class _RequestTowPageState extends State<RequestTowPage> {
       }
 
       setState(() {
-        if (_mapTapSetsPickup) {
+        if (setsPickup) {
           _pickupPlace = place;
           _pickupController.text = place.label;
+          // Flip the toggle so the *next* tap targets the destination by
+          // default — matches the typical pickup-then-destination flow.
+          _mapTapSetsPickup = false;
         } else {
           _destinationPlace = place;
           _destinationController.text = place.label;
         }
       });
 
-      if (_mapTapSetsPickup) {
+      if (setsPickup) {
         await AppPreferencesService.saveLastPickupPlace(place);
         await _loadNearbyDrivers(userPlace: place);
       }
