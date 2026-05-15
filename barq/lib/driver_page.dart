@@ -200,6 +200,10 @@ class _DriverPageState extends State<DriverPage> {
     });
     await _persistDeclinedIds();
     _syncFocusedRequestMap();
+    // Best-effort backend write so other drivers' matching and this driver's
+    // future sessions reflect the decline; SharedPreferences above is the
+    // offline fallback.
+    unawaited(_pocketBaseService.declineTowRequest(request.id));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Request declined.')),

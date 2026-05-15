@@ -743,6 +743,30 @@ class PocketBaseService {
     return result.items.map(TowRequest.fromRecord).toList(growable: false);
   }
 
+  Future<bool> declineTowRequest(String requestId) async {
+    if (!isCurrentUserDriver) return false;
+    final userId = _userId?.trim();
+    if (userId == null || userId.isEmpty) return false;
+
+    try {
+      final existing =
+          await _client.collection('tow_requests').getOne(requestId);
+      final current =
+          existing.getListValue<String>('declined_by').toSet();
+      if (current.contains(userId)) {
+        return true;
+      }
+      current.add(userId);
+      await _client.collection('tow_requests').update(
+        requestId,
+        body: <String, dynamic>{'declined_by': current.toList()},
+      );
+      return true;
+    } on ClientException {
+      return false;
+    }
+  }
+
   Future<void> cleanupExpiredPendingRequests({
     bool includeDriverVisible = false,
   }) async {
