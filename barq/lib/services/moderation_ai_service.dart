@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'ai_rate_limiter.dart';
 import 'app_config.dart';
 
 class ReportVerdict {
@@ -147,6 +148,9 @@ Plate: $plateNumber
     final apiKey = AppConfig.geminiApiKey.trim();
     if (apiKey.isEmpty) {
       throw StateError('GEMINI_API_KEY missing');
+    }
+    if (!AiRateLimiter.instance.tryConsume('moderation')) {
+      throw StateError('AI moderation rate limit reached; retry shortly.');
     }
 
     final parts = <Map<String, dynamic>>[

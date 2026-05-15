@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:pocketbase/pocketbase.dart';
 
+import 'ai_rate_limiter.dart';
 import 'app_config.dart';
 import 'pocketbase_service.dart';
 
@@ -31,6 +32,11 @@ class SupportAiService {
 
     if (!_isAppRelatedMessage(userMessage)) {
       return SupportReply(text: _offTopicReply(isArabic));
+    }
+
+    if (!AiRateLimiter.instance.tryConsume('support',
+        maxPerMinute: 8, maxPerHour: 40)) {
+      return SupportReply(text: _rateLimitReply(isArabic));
     }
 
     final examples = await _loadHelpfulExamples(
@@ -585,6 +591,12 @@ class SupportAiService {
     return isArabic
         ? 'يمكنني المساعدة فقط في مواضيع تطبيق برق مثل الطلبات، السائق، الخريطة، التسعير، الدفع، الحساب، والإعدادات. اكتب مشكلتك داخل التطبيق وسأعطيك خطوات مباشرة.'
         : 'I can only help with Barq app topics (requests, drivers, map, pricing, payments, account, and settings). Please share your app issue and I will give direct steps.';
+  }
+
+  String _rateLimitReply(bool isArabic) {
+    return isArabic
+        ? 'يرجى الانتظار قليلًا قبل إرسال رسالة جديدة لمساعد الدعم.'
+        : 'Please wait a moment before sending another support message.';
   }
 
   String _fallbackReply(String message, bool isArabic) {

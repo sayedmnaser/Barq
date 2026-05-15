@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:pocketbase/pocketbase.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -289,6 +290,18 @@ class _MyAppState extends State<MyApp> {
         ),
         useMaterial3: true,
       ),
+      locale: _language == AppLanguage.ar
+          ? const Locale('ar')
+          : const Locale('en'),
+      supportedLocales: const <Locale>[
+        Locale('en'),
+        Locale('ar'),
+      ],
+      localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       builder: (context, child) {
         return Directionality(
           textDirection: _language == AppLanguage.ar
