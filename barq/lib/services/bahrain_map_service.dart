@@ -118,7 +118,7 @@ class BahrainMapService {
         'Accept': 'application/json',
         'Accept-Language': 'en,ar',
       },
-    );
+    ).timeout(const Duration(seconds: 12));
 
     if (response.statusCode != 200) {
       throw Exception(
@@ -231,10 +231,9 @@ class BahrainMapService {
           'Accept': 'application/json',
           'Accept-Language': 'en,ar',
         },
-      );
+      ).timeout(const Duration(seconds: 12));
 
       if (response.statusCode != 200) {
-        _reverseGeocodeCache[cacheKey] = null;
         return null;
       }
 
@@ -246,7 +245,6 @@ class BahrainMapService {
       _reverseGeocodeCache[cacheKey] = normalizedPlace;
       return normalizedPlace;
     } catch (_) {
-      _reverseGeocodeCache[cacheKey] = null;
       return null;
     }
   }
@@ -454,6 +452,14 @@ class BahrainMapService {
     final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
     return earthRadiusKm * c;
   }
+
+  static double distanceMeters(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) =>
+      _haversineKm(lat1, lon1, lat2, lon2) * 1000.0;
 
   static double _degToRad(double degrees) => degrees * 0.017453292519943295;
 

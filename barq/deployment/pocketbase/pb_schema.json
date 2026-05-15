@@ -1076,10 +1076,10 @@
   },
   {
     "id": "pbc_1878279010",
-    "listRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || @request.auth.Driver = true)",
-    "viewRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || @request.auth.Driver = true)",
+    "listRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id)))",
+    "viewRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id)))",
     "createRule": "@request.auth.id = user",
-    "updateRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || @request.auth.Driver = true)",
+    "updateRule": "@request.auth.id != \"\" && (user = @request.auth.id || driver = @request.auth.id || (@request.auth.Driver = true && status = \"pending\" && driver = \"\" && (candidate_drivers:length = 0 || candidate_drivers.id ?= @request.auth.id)))",
     "deleteRule": "@request.auth.id = user",
     "name": "tow_requests",
     "type": "base",
@@ -1530,7 +1530,11 @@
         "type": "autodate"
       }
     ],
-    "indexes": [],
+    "indexes": [
+      "CREATE INDEX `idx_tow_status_created` ON `tow_requests` (`status`, `created`)",
+      "CREATE INDEX `idx_tow_driver` ON `tow_requests` (`driver`)",
+      "CREATE INDEX `idx_tow_user` ON `tow_requests` (`user`)"
+    ],
     "system": false
   },
   {

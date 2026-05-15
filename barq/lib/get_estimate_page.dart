@@ -4,6 +4,7 @@ import 'package:latlong2/latlong.dart';
 import 'models/place_result.dart';
 import 'services/app_preferences_service.dart';
 import 'services/bahrain_map_service.dart';
+import 'services/bahrain_pricing.dart';
 import 'services/location_service.dart';
 import 'settings.dart';
 import 'widgets/barq_live_map.dart';
@@ -21,15 +22,6 @@ class GetEstimatePage extends StatefulWidget {
 }
 
 class _GetEstimatePageState extends State<GetEstimatePage> {
-  static const double _nightSurchargeBhd = 5.0;
-
-  static double tierFareForDistance(double km) {
-    if (km <= 0) return 10.0;
-    if (km <= 15) return 10.0;
-    if (km <= 20) return 15.0;
-    return 20.0;
-  }
-
   final TextEditingController _pickupController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
 
@@ -38,7 +30,6 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
   RouteInfo? _routeInfo;
 
   EstimateVehicleType _vehicleType = EstimateVehicleType.sedan;
-  bool _nightService = false;
   bool _isLoadingRoute = false;
   bool _isFetchingCurrentLocation = false;
   bool _shareLocationEnabled = true;
@@ -82,14 +73,15 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
     }
   }
 
-  double get _baseFare => tierFareForDistance(_distanceKm);
+  double get _baseFare => BahrainPricing.tierFareForDistance(_distanceKm);
 
   double get _distanceKm => _routeInfo?.distanceKm ?? 0;
   double get _distanceFare => 0.0;
 
   double get _serviceFee => 0.0;
   double get _dayFare => _baseFare;
-  double get _surcharge => _nightService ? _nightSurchargeBhd : 0;
+  bool get _isNightHour => BahrainPricing.isNightHour();
+  double get _surcharge => _isNightHour ? BahrainPricing.nightSurchargeBhd : 0;
   double get _total => _dayFare + _surcharge;
 
   Future<void> _pickLocation(
@@ -331,18 +323,22 @@ class _GetEstimatePageState extends State<GetEstimatePage> {
                       });
                     },
                   ),
-                  const SizedBox(height: 8),
-                  SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    value: _nightService,
-                    title: Text(strings.text('estimateNightService')),
-                    subtitle: Text(strings.text('estimateNightServiceSub')),
-                    onChanged: (value) {
-                      setState(() {
-                        _nightService = value;
-                      });
-                    },
-                  ),
+                  if (_isNightHour)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.nightlight_round, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              strings.text('estimateNightService'),
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   if (_routeError != null)
                     Align(
                       alignment: Alignment.centerLeft,

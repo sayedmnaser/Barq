@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -31,18 +30,18 @@ class TrackServicePage extends StatefulWidget {
   const TrackServicePage({
     super.key,
     this.requestId,
-    this.pickupLocation = 'Seef District, Manama',
-    this.destinationLocation = 'Auto Repair - Sitra Industrial Area',
-    this.driverName = 'Ahmed Al-Khalifa',
-    this.driverRating = 4.8,
-    this.driverTotalRides = 1247,
-    this.vehicleDescription = 'Flatbed Tow Truck #12',
-    this.licensePlate = 'TOW-2481',
-    this.distanceKm = 10.0,
-    this.remainingDistanceKm = 0.3,
-    this.etaMinutes = 8,
-    this.baseFare = 50.0,
-    this.distanceFare = 25.0,
+    this.pickupLocation = '',
+    this.destinationLocation = '',
+    this.driverName = '',
+    this.driverRating = 0.0,
+    this.driverTotalRides = 0,
+    this.vehicleDescription = '',
+    this.licensePlate = '',
+    this.distanceKm = 0.0,
+    this.remainingDistanceKm = 0.0,
+    this.etaMinutes = 0,
+    this.baseFare = 0.0,
+    this.distanceFare = 0.0,
     this.pickupLat,
     this.pickupLng,
     this.destinationLat,
@@ -396,7 +395,7 @@ class _TrackServicePageState extends State<TrackServicePage> {
     if (_lastRouteLeg != plan.leg) return true;
     final last = _lastRouteStart;
     if (last == null) return true;
-    final meters = _haversineMeters(
+    final meters = BahrainMapService.distanceMeters(
       last.latitude,
       last.longitude,
       plan.start.latitude,
@@ -405,29 +404,17 @@ class _TrackServicePageState extends State<TrackServicePage> {
     return meters >= _kRouteRebuildMeters;
   }
 
-  double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
-    const earthRadius = 6371000.0;
-    final dLat = (lat2 - lat1) * math.pi / 180.0;
-    final dLng = (lng2 - lng1) * math.pi / 180.0;
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(lat1 * math.pi / 180.0) *
-            math.cos(lat2 * math.pi / 180.0) *
-            math.sin(dLng / 2) *
-            math.sin(dLng / 2);
-    return 2 * earthRadius * math.asin(math.sqrt(a));
-  }
-
   double? _liveDriverDistanceKm() {
     if (_driverLat == null || _driverLng == null) return null;
     if (_status == 'en_route' &&
         _destinationLat != null &&
         _destinationLng != null) {
-      return _haversineMeters(
+      return BahrainMapService.distanceMeters(
               _driverLat!, _driverLng!, _destinationLat!, _destinationLng!) /
           1000.0;
     }
     if (_pickupLat != null && _pickupLng != null) {
-      return _haversineMeters(
+      return BahrainMapService.distanceMeters(
               _driverLat!, _driverLng!, _pickupLat!, _pickupLng!) /
           1000.0;
     }
@@ -590,6 +577,14 @@ class _TrackServicePageState extends State<TrackServicePage> {
     if (_status == 'cancelled') {
       return _isArabic ? 'تم إلغاء الطلب' : 'Request cancelled';
     }
+    if (_status == 'cancel_pending') {
+      return _isArabic
+          ? 'مراجعة طلب الإلغاء'
+          : 'Cancellation under review';
+    }
+    if (_status == 'expired') {
+      return _isArabic ? 'انتهت صلاحية الطلب' : 'Request expired';
+    }
     if (_status == 'en_route' && _driverPlace != null) {
       return _isArabic ? 'في الطريق إلى الوجهة' : 'Heading to destination';
     }
@@ -613,7 +608,11 @@ class _TrackServicePageState extends State<TrackServicePage> {
             : '${distance.toStringAsFixed(1)} km',
       );
     }
-    if (eta > 0 && _status != 'completed' && _status != 'cancelled') {
+    if (eta > 0 &&
+        _status != 'completed' &&
+        _status != 'cancelled' &&
+        _status != 'expired' &&
+        _status != 'cancel_pending') {
       pieces.add(
         _isArabic ? 'حوالي $eta دقيقة' : 'about $eta min',
       );
@@ -632,6 +631,9 @@ class _TrackServicePageState extends State<TrackServicePage> {
         return 2;
       case 'completed':
         return 3;
+      case 'cancel_pending':
+      case 'cancelled':
+      case 'expired':
       default:
         return 0;
     }
@@ -649,6 +651,10 @@ class _TrackServicePageState extends State<TrackServicePage> {
         return strings.text('completed');
       case 'cancelled':
         return strings.text('cancelled');
+      case 'cancel_pending':
+        return _isArabic ? 'طلب إلغاء قيد المراجعة' : 'Cancellation pending';
+      case 'expired':
+        return _isArabic ? 'منتهي الصلاحية' : 'Expired';
       default:
         return _status;
     }
@@ -670,6 +676,14 @@ class _TrackServicePageState extends State<TrackServicePage> {
         return _isArabic
             ? 'تم إلغاء الطلب في قاعدة البيانات.'
             : 'This request was cancelled in the database.';
+      case 'cancel_pending':
+        return _isArabic
+            ? 'تتم مراجعة طلب الإلغاء من قبل النظام.'
+            : 'Your cancellation request is under review.';
+      case 'expired':
+        return _isArabic
+            ? 'انتهت صلاحية الطلب قبل قبول أي سائق.'
+            : 'The request expired before any driver accepted it.';
       default:
         return strings.text('realtimeTrackingSub');
     }

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -72,7 +71,7 @@ class _DriverPageState extends State<DriverPage> {
   bool _isSaving = false;
   bool _isLoadingMap = false;
   bool _isScanningPlate = false;
-  bool _isAvailable = true;
+  bool _isAvailable = false;
   bool _isTowRealtimeSubscribed = false;
   late final bool _hasDriverAccess;
   Timer? _refreshTimer;
@@ -101,9 +100,6 @@ class _DriverPageState extends State<DriverPage> {
     _driverLocationTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       _refreshDriverLocation();
     });
-    if (_isAvailable) {
-      DriverLocationService.instance.start();
-    }
   }
 
   @override
@@ -113,6 +109,7 @@ class _DriverPageState extends State<DriverPage> {
     if (_isTowRealtimeSubscribed) {
       _pocketBaseService.unsubscribeDriverTowRequests();
     }
+    DriverLocationService.instance.stop();
     _driverNameController.dispose();
     _licensePlateController.dispose();
     _driverRatingController.dispose();
@@ -639,7 +636,7 @@ class _DriverPageState extends State<DriverPage> {
       // fall back to last cached fix from the foreground stream
       final live = _driverLivePlace;
       if (live != null) {
-        final meters = _haversineMeters(
+        final meters = BahrainMapService.distanceMeters(
           live.latitude,
           live.longitude,
           targetLat,
@@ -672,7 +669,7 @@ class _DriverPageState extends State<DriverPage> {
       return false;
     }
 
-    final meters = _haversineMeters(
+    final meters = BahrainMapService.distanceMeters(
       pos.latitude,
       pos.longitude,
       targetLat,
@@ -693,18 +690,6 @@ class _DriverPageState extends State<DriverPage> {
       return false;
     }
     return true;
-  }
-
-  double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
-    const earthRadius = 6371000.0;
-    final dLat = (lat2 - lat1) * math.pi / 180.0;
-    final dLng = (lng2 - lng1) * math.pi / 180.0;
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(lat1 * math.pi / 180.0) *
-            math.cos(lat2 * math.pi / 180.0) *
-            math.sin(dLng / 2) *
-            math.sin(dLng / 2);
-    return 2 * earthRadius * math.asin(math.sqrt(a));
   }
 
   Future<void> _startTrip(TowRequest request) async {
@@ -1720,7 +1705,7 @@ class _DriverPageState extends State<DriverPage> {
       });
       // Trigger route refresh when driver moves enough or there is no route yet.
       final movedFar = prev == null ||
-          _haversineMeters(
+          BahrainMapService.distanceMeters(
                 prev.latitude,
                 prev.longitude,
                 place.latitude,

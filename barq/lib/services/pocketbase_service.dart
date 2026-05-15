@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
 import 'package:pocketbase/pocketbase.dart';
@@ -8,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/tow_request_model.dart';
 import '../models/user_model.dart';
 import 'app_config.dart';
+import 'bahrain_map_service.dart';
 
 class PocketBaseService {
   PocketBaseService._internal(PocketBase client) : _client = client;
@@ -857,13 +857,24 @@ class PocketBaseService {
       if (status == 'en_route' &&
           destinationLat != null &&
           destinationLng != null) {
-        final meters = _haversineMeters(
+        final metersToDestination = BahrainMapService.distanceMeters(
           latitude,
           longitude,
           destinationLat,
           destinationLng,
         );
-        if (meters <= _autoCompleteRadiusMeters) {
+        // Require the driver to have actually left the pickup area before
+        // auto-completing. Without this guard, the first location push that
+        // lands after Start Trip can flip status straight to "completed" when
+        // pickup is close to destination — the customer never observes the
+        // en_route state on their tracking screen.
+        final pickupLat = _recordCoordinate(record, 'pickup_lat');
+        final pickupLng = _recordCoordinate(record, 'pickup_lng');
+        final hasLeftPickup = pickupLat == null || pickupLng == null ||
+            BahrainMapService.distanceMeters(
+                    latitude, longitude, pickupLat, pickupLng) >
+                _autoCompleteRadiusMeters;
+        if (metersToDestination <= _autoCompleteRadiusMeters && hasLeftPickup) {
           body['status'] = 'completed';
           body['eta_minutes'] = 0;
         }
@@ -887,18 +898,6 @@ class PocketBaseService {
   double? _recordCoordinate(RecordModel record, String field) {
     final value = record.getDoubleValue(field);
     return value == 0 ? null : value;
-  }
-
-  double _haversineMeters(double lat1, double lng1, double lat2, double lng2) {
-    const earthRadius = 6371000.0;
-    final dLat = (lat2 - lat1) * math.pi / 180.0;
-    final dLng = (lng2 - lng1) * math.pi / 180.0;
-    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(lat1 * math.pi / 180.0) *
-            math.cos(lat2 * math.pi / 180.0) *
-            math.sin(dLng / 2) *
-            math.sin(dLng / 2);
-    return 2 * earthRadius * math.asin(math.sqrt(a));
   }
 
   Future<TowRequest> updateTowRequestAsDriver({
@@ -1152,7 +1151,10 @@ class PocketBaseService {
 
     await _client.collection('tow_requests').subscribe('*', (event) {
       final record = event.record;
-      if (record == null || record.getStringValue('user') == userId) {
+      if (record == null) {
+        return;
+      }
+      if (record.getStringValue('user') == userId) {
         onChange();
       }
     });

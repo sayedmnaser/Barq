@@ -6,6 +6,7 @@ import 'package:pocketbase/pocketbase.dart';
 import 'models/place_result.dart';
 import 'services/app_preferences_service.dart';
 import 'services/bahrain_map_service.dart';
+import 'services/bahrain_pricing.dart';
 import 'services/location_service.dart';
 import 'services/pocketbase_service.dart';
 import 'settings.dart';
@@ -191,26 +192,15 @@ class _RequestTowPageState extends State<RequestTowPage> {
     }
   }
 
-  static const double _nightSurchargeBhd = 5.0;
+  bool get _isNightHour => BahrainPricing.isNightHour();
 
-  static double tierFareForDistance(double km) {
-    if (km <= 0) return 10.0;
-    if (km <= 15) return 10.0;
-    if (km <= 20) return 15.0;
-    return 20.0;
-  }
-
-  bool get _isNightHour {
-    final hour = DateTime.now().hour;
-    return hour >= 22 || hour < 6;
-  }
-
-  double get _baseFare => tierFareForDistance(_distanceKm);
+  double get _baseFare => BahrainPricing.tierFareForDistance(_distanceKm);
 
   double get _distanceKm => _routeInfo?.distanceKm ?? 0;
   int get _etaMinutes =>
       _routeInfo?.durationMinutes ?? (_serviceTiming == 0 ? 15 : 30);
-  double get _distanceFare => _isNightHour ? _nightSurchargeBhd : 0.0;
+  double get _distanceFare =>
+      _isNightHour ? BahrainPricing.nightSurchargeBhd : 0.0;
   double get _totalFare => _baseFare + _distanceFare;
 
   Future<void> _pickLocation(
