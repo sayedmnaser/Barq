@@ -1,0 +1,16 @@
+# Claude Code local permission / cache state — must never contain secrets.
+.claude/settings.local.json
+.claude/cache/
+.claude/projects/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Build artefacts
+**/build/

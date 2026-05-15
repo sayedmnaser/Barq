@@ -1514,7 +1514,9 @@ class _DriverPageState extends State<DriverPage> {
                       isAvailable: false,
                     );
                   }
-                } catch (_) {}
+                } catch (e) {
+                  debugPrint('driver_page: offline upsert failed: $e');
+                }
               }
             },
           ),

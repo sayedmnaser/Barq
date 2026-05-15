@@ -1,3 +1,9 @@
+{
+  servers {
+    trusted_proxies static private_ranges
+  }
+}
+
 {$DOMAIN} {
   tls {$EMAIL}
 
@@ -5,9 +11,51 @@
     max_size 20MB
   }
 
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    -Server
+  }
+
+  # Per-IP rate limit on the public auth + write surface.
+  # PocketBase exposes auth at /api/collections/{name}/auth-with-password,
+  # auth-refresh, request-password-reset, confirm-password-reset, and the
+  # generic record create/update endpoints. The caps here are generous for
+  # legit clients (one customer + driver session pair can comfortably stay
+  # below) but block credential-stuffing, password-reset spray, and AI
+  # cost-DoS via the trip-create / hook-trigger paths.
+  @auth_endpoints {
+    path /api/collections/users/auth-with-password
+    path /api/collections/users/request-password-reset
+    path /api/collections/users/confirm-password-reset
+    path /api/collections/users/auth-refresh
+  }
+  rate_limit @auth_endpoints {
+    zone auth_zone
+    key {remote_host}
+    events 10
+    window 1m
+  }
+
+  @write_endpoints {
+    method POST PATCH DELETE
+  }
+  rate_limit @write_endpoints {
+    zone write_zone
+    key {remote_host}
+    events 120
+    window 1m
+  }
+
   reverse_proxy pocketbase:8090 {
     transport http {
       read_timeout 360s
     }
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
   }
 }

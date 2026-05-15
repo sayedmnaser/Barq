@@ -149,7 +149,9 @@ class _BarqLiveMapState extends State<BarqLiveMap>
           ),
         );
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('barq_live_map: camera fit failed: $e');
+    }
     setState(() => _followDriver = true);
   }
 

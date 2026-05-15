@@ -7,26 +7,65 @@ services:
     restart: unless-stopped
     expose:
       - "8090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8090/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ./pb_data:/pb/pb_data
       - ./pb_hooks:/pb/pb_hooks
       - ./pb_migrations:/pb/pb_migrations
+      - ./pb_backups:/pb/pb_backups
 
   caddy:
-    image: caddy:2
+    build:
+      context: .
+      dockerfile: Caddy.Dockerfile
     restart: unless-stopped
     depends_on:
-      - pocketbase
+      pocketbase:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
     environment:
       DOMAIN: ${DOMAIN}
       EMAIL: ${EMAIL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+
+  backup:
+    image: alpine:3
+    restart: unless-stopped
+    depends_on:
+      - pocketbase
+    environment:
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./pb_data:/pb/pb_data:ro
+      - ./pb_backups:/pb/pb_backups
+      - ./backup.sh:/usr/local/bin/backup.sh:ro
+    entrypoint: /bin/sh
+    command: -c "apk add --no-cache sqlite tzdata && while true; do /usr/local/bin/backup.sh || true; sleep 86400; done"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
 
 volumes:
   caddy_data:

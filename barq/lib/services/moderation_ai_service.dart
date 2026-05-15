@@ -265,14 +265,19 @@ Plate: $plateNumber
     try {
       final decoded = jsonDecode(trimmed);
       if (decoded is Map<String, dynamic>) return decoded;
-    } catch (_) {}
+    } catch (_) {
+      // LLM responses occasionally wrap JSON in prose; fall through to the
+      // regex extraction below before giving up.
+    }
 
     final match = RegExp(r'\{[\s\S]*\}').firstMatch(trimmed);
     if (match != null) {
       try {
         final decoded = jsonDecode(match.group(0)!);
         if (decoded is Map<String, dynamic>) return decoded;
-      } catch (_) {}
+      } catch (_) {
+        // Final fallback: caller treats empty map as "AI verdict unavailable".
+      }
     }
     return const <String, dynamic>{};
   }
