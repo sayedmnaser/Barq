@@ -205,8 +205,9 @@ class _DriverPageState extends State<DriverPage> {
     // offline fallback.
     unawaited(_pocketBaseService.declineTowRequest(request.id));
     if (!mounted) return;
+    final strings = AppStrings(widget.language);
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Request declined.')),
+      SnackBar(content: Text(strings.text('driverRequestDeclined'))),
     );
   }
 
@@ -255,11 +256,12 @@ class _DriverPageState extends State<DriverPage> {
   }
 
   Future<void> _saveDriverProfile({bool silent = false}) async {
+    final strings = AppStrings(widget.language);
     final driverName = _driverNameController.text.trim();
     if (driverName.isEmpty) {
       if (!silent) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Driver name is required.')),
+          SnackBar(content: Text(strings.text('driverNameRequired'))),
         );
       }
       return;
@@ -282,12 +284,12 @@ class _DriverPageState extends State<DriverPage> {
       );
       if (!mounted || silent) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Driver profile saved.')),
+        SnackBar(content: Text(strings.text('driverProfileSaved'))),
       );
     } on ClientException catch (e) {
       if (!mounted || silent) return;
       final message = e.response['message'] as String? ??
-          'Could not save driver profile. Check collection rules.';
+          strings.text('driverProfileSaveFailed');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
@@ -299,7 +301,7 @@ class _DriverPageState extends State<DriverPage> {
     } catch (_) {
       if (!mounted || silent) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not save driver profile.')),
+        SnackBar(content: Text(strings.text('driverProfileSaveFailed'))),
       );
     }
   }
@@ -595,10 +597,11 @@ class _DriverPageState extends State<DriverPage> {
   }
 
   Future<void> _acceptRequest(TowRequest request) async {
+    final strings = AppStrings(widget.language);
     final driverName = _driverNameController.text.trim();
     if (driverName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter driver name first.')),
+        SnackBar(content: Text(strings.text('driverEnterNameFirst'))),
       );
       return;
     }
@@ -878,7 +881,7 @@ class _DriverPageState extends State<DriverPage> {
     final strings = AppStrings(widget.language);
     if (!_hasDriverAccess) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Driver Panel')),
+        appBar: AppBar(title: Text(strings.text('driverPanelTitle'))),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -894,7 +897,7 @@ class _DriverPageState extends State<DriverPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Driver Panel'),
+        title: Text(strings.text('driverPanelTitle')),
         actions: [
           if (widget.onSwitchToCustomerView != null)
             IconButton(
@@ -1561,8 +1564,11 @@ class _DriverPageState extends State<DriverPage> {
         });
         await _saveDriverProfile(silent: true);
         if (!mounted) return;
+        final s = AppStrings(widget.language);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Plate saved: $manual')),
+          SnackBar(
+              content: Text(
+                  s.text('driverPlateSaved').replaceAll('{plate}', manual))),
         );
         return;
       }
@@ -1576,18 +1582,29 @@ class _DriverPageState extends State<DriverPage> {
       });
       await _saveDriverProfile(silent: true);
       if (!mounted) return;
+      final s = AppStrings(widget.language);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Plate saved: $confirmed')),
+        SnackBar(
+            content: Text(
+                s.text('driverPlateSaved').replaceAll('{plate}', confirmed))),
       );
     } on PlatformException catch (e) {
       if (!mounted) return;
+      final s = AppStrings(widget.language);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Camera error: ${e.message ?? e.code}')),
+        SnackBar(
+            content: Text(s
+                .text('driverCameraError')
+                .replaceAll('{error}', e.message ?? e.code))),
       );
     } catch (e) {
       if (!mounted) return;
+      final s = AppStrings(widget.language);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Plate scan failed: $e')),
+        SnackBar(
+            content: Text(s
+                .text('driverPlateScanFailed')
+                .replaceAll('{error}', '$e'))),
       );
     } finally {
       await recognizer?.close();
@@ -2206,8 +2223,12 @@ class _DriverPageState extends State<DriverPage> {
       await _loadRequests(silent: true);
     } catch (e) {
       if (!mounted) return;
+      final s = AppStrings(widget.language);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Upload failed: $e')),
+        SnackBar(
+            content: Text(s
+                .text('driverUploadFailed')
+                .replaceAll('{error}', '$e'))),
       );
     } finally {
       if (mounted) setState(() => _isSaving = false);
@@ -2338,10 +2359,11 @@ class _DriverPageState extends State<DriverPage> {
 
   Future<void> _promptCancel(TowRequest request) async {
     final controller = TextEditingController();
+    final s = AppStrings(widget.language);
     final reason = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Cancel job'),
+        title: Text(s.text('driverCancelJobTitle')),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2365,12 +2387,12 @@ class _DriverPageState extends State<DriverPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(null),
-            child: const Text('Keep job'),
+            child: Text(s.text('driverKeepJob')),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-            child: const Text('Submit cancel'),
+            child: Text(s.text('driverSubmitCancel')),
           ),
         ],
       ),
@@ -2385,6 +2407,7 @@ class _DriverPageState extends State<DriverPage> {
       _isSaving = true;
     });
     final previousStatus = request.status;
+    final strings = AppStrings(widget.language);
     try {
       await _pocketBaseService.requestDriverCancellation(
         requestId: request.id,
@@ -2392,21 +2415,26 @@ class _DriverPageState extends State<DriverPage> {
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cancellation sent. AI reviewing...')),
+        SnackBar(content: Text(strings.text('driverCancellationSent'))),
       );
       await _loadRequests(silent: true);
       _runCancellationAi(request, reason, previousStatus);
     } on ClientException catch (e) {
       if (!mounted) return;
-      final message =
-          e.response['message'] as String? ?? 'Could not request cancellation.';
+      final message = e.response['message'] as String? ??
+          strings
+              .text('driverCancellationFailed')
+              .replaceAll('{error}', '');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not request cancellation: $e')),
+        SnackBar(
+            content: Text(strings
+                .text('driverCancellationFailed')
+                .replaceAll('{error}', '$e'))),
       );
     } finally {
       if (mounted) {
