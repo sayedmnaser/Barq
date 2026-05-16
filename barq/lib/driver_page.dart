@@ -2526,7 +2526,7 @@ class _DriverPageState extends State<DriverPage> {
   }
 }
 
-class _FullscreenMapPage extends StatelessWidget {
+class _FullscreenMapPage extends StatefulWidget {
   const _FullscreenMapPage({
     this.pickup,
     this.destination,
@@ -2544,6 +2544,36 @@ class _FullscreenMapPage extends StatelessWidget {
   final String? subline;
 
   @override
+  State<_FullscreenMapPage> createState() => _FullscreenMapPageState();
+}
+
+class _FullscreenMapPageState extends State<_FullscreenMapPage> {
+  PlaceResult? _liveDriver;
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _liveDriver = widget.driver;
+    // Without this poll, the snapshot passed in widget.driver is frozen at
+    // the moment the route was pushed — the marker on the fullscreen map
+    // would stop moving even though DriverLocationService is still pushing.
+    _refreshTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      final fresh = await LocationService.tryGetCurrentPlaceSilently();
+      if (!mounted || fresh == null) return;
+      setState(() {
+        _liveDriver = fresh;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     return Scaffold(
@@ -2557,12 +2587,12 @@ class _FullscreenMapPage extends StatelessWidget {
       ),
       body: BarqLiveMap(
         height: size.height,
-        pickup: pickup,
-        destination: destination,
-        driver: driver,
-        routePoints: routePoints,
-        headline: headline,
-        subline: subline,
+        pickup: widget.pickup,
+        destination: widget.destination,
+        driver: _liveDriver,
+        routePoints: widget.routePoints,
+        headline: widget.headline,
+        subline: widget.subline,
       ),
     );
   }
