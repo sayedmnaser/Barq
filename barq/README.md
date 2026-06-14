@@ -1,6 +1,6 @@
 # Barq
 
-Barq is a Flutter towing app for Bahrain. It connects customers who need roadside help with nearby drivers, estimates trip cost from map distance, and keeps both sides updated through PocketBase realtime data.
+Barq is a Flutter towing app for Bahrain. It connects customers who need roadside help with nearby drivers, estimates trip cost from map distance, and keeps both sides updated through PocketBase realtime events.
 
 <p align="center">
   <img src="assets/readme/barq-route-animation.svg" alt="Animated Barq route preview" width="860">
@@ -40,7 +40,9 @@ barq/
 Install dependencies:
 
 ```bash
-flutter pub get
+flu
+
+tter pub get
 ```
 
 Run against the default production backend:
@@ -135,4 +137,3 @@ Build an Android release with the helper script:
 
 - A public HTTPS PocketBase URL is required for reliable phone testing across networks.
 - OpenStreetMap, Nominatim, and public OSRM defaults are useful for development; production deployments should consider dedicated map services and usage policies.
-- `README_FIX.md` documents the common mistake of copying `pubspec.yaml` into `lib/`; the correct project root is the folder containing this README and `pubspec.yaml`.
